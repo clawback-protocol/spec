@@ -68,7 +68,7 @@
    - [x] Specification v0.1 drafted                                                                                     
    - [ ] Reference SDK (Rust)                                                                                           
    - [ ] Reference SDK (TypeScript)                                                                                     
-   - [ ] Proof of concept demo                                                                                          
+   - [x] Proof of concept demo — see [`poc` branch](https://github.com/clawback-protocol/spec/tree/poc)                                                                                          
    - [ ] Security audit                                                                                                 
                                                                                                                         
    ---                                                                                                                  
