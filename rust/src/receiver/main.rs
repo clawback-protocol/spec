@@ -3,7 +3,7 @@
 // The receiver:
 // - Presents share_token to broker via HTTP
 // - Receives encrypted blob + share_key
-// - Decrypts locally using ChaCha20-Poly1305
+// - Decrypts locally via library Receiver::decrypt
 // - Gets HTTP 403 if the share has been revoked
 
 use axum::{
@@ -14,6 +14,8 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
+use clawback::crypto::EncryptedPayload;
+use clawback::receiver::Receiver;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -30,23 +32,6 @@ type AppState = Arc<ReceiverState>;
 struct ReceiveRequest {
     payload_id: Option<String>,
     share_token: Option<String>,
-}
-
-// ── Crypto helper ───────────────────────────────────────────────────────────
-
-fn decrypt_blob(blob: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
-
-    if blob.len() < 12 {
-        return Err("blob too short".to_string());
-    }
-    let (nonce_bytes, ciphertext) = blob.split_at(12);
-    let cipher =
-        ChaCha20Poly1305::new_from_slice(key).map_err(|e| format!("invalid key: {e}"))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| format!("decryption failed: {e}"))
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────────
@@ -158,7 +143,18 @@ async fn receive(
         }
     };
 
-    match decrypt_blob(&encrypted_blob, &share_key) {
+    // Reconstruct EncryptedPayload from wire blob, then decrypt via library
+    let payload = match EncryptedPayload::from_blob(&encrypted_blob) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "invalid payload", "detail": e.to_string()})),
+            )
+        }
+    };
+
+    match Receiver::decrypt(&share_key, &payload) {
         Ok(plaintext_bytes) => {
             let plaintext = String::from_utf8_lossy(&plaintext_bytes).to_string();
             (
@@ -175,7 +171,7 @@ async fn receive(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
                 "error": "decryption failed",
-                "detail": e
+                "detail": e.to_string()
             })),
         ),
     }
