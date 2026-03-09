@@ -115,7 +115,7 @@ pub fn generate_destruction_proof(
     revoked_at: &str,
 ) -> String {
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(broker_secret).expect("HMAC key error");
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(broker_secret).expect("HMAC key error");
     mac.update(payload_id.as_bytes());
     mac.update(revoked_at.as_bytes());
     let result = mac.finalize();

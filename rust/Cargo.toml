@@ -31,6 +31,7 @@ hkdf = "0.12"
 sha2 = "0.10"
 hmac = "0.12"
 rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +44,12 @@ uuid = { version = "1", features = ["v4"] }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
+
+# HTTP client (sender/receiver → broker)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Encoding
+base64 = "0.22"
 
 # Utils
 hex = "0.4"
