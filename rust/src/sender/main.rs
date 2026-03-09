@@ -15,21 +15,15 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
+use clawback::sender::Sender;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // ── Internal state ──────────────────────────────────────────────────────────
 
-struct PayloadEntry {
-    #[allow(dead_code)]
-    master_key: Vec<u8>,
-    enc_key: Vec<u8>,
-    shares: HashMap<String, bool>,
-}
-
 struct SenderState {
-    payloads: HashMap<String, PayloadEntry>,
+    sender: Sender,
     broker_url: String,
     client: reqwest::Client,
 }
@@ -68,44 +62,6 @@ struct BrokerRevokeReq {
     share_id: String,
 }
 
-// ── Crypto helpers (matching Python PoC) ────────────────────────────────────
-
-fn generate_master_key() -> Vec<u8> {
-    use rand::RngCore;
-    let mut key = vec![0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut key);
-    key
-}
-
-fn derive_enc_key(master_key: &[u8]) -> Vec<u8> {
-    use hkdf::Hkdf;
-    use sha2::Sha256;
-    let hk = Hkdf::<Sha256>::new(None, master_key);
-    let mut okm = vec![0u8; 32];
-    hk.expand(b"payload-encryption", &mut okm)
-        .expect("HKDF expand failed");
-    okm
-}
-
-fn encrypt_payload(plaintext: &[u8], enc_key: &[u8]) -> Vec<u8> {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
-    use rand::RngCore;
-
-    let cipher = ChaCha20Poly1305::new_from_slice(enc_key).expect("invalid key length");
-    let mut nonce_bytes = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext)
-        .expect("encryption failed");
-
-    // Return nonce || ciphertext (matches Python format)
-    let mut blob = Vec::with_capacity(12 + ciphertext.len());
-    blob.extend_from_slice(&nonce_bytes);
-    blob.extend_from_slice(&ciphertext);
-    blob
-}
-
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 async fn encrypt(
@@ -122,29 +78,41 @@ async fn encrypt(
         }
     };
 
-    let payload_id = uuid::Uuid::new_v4().to_string();
-    let share_id = uuid::Uuid::new_v4().to_string();
-    let master_key = generate_master_key();
-    let enc_key = derive_enc_key(&master_key);
-
-    let blob = encrypt_payload(plaintext.as_bytes(), &enc_key);
-    let blob_b64 = base64::engine::general_purpose::STANDARD.encode(&blob);
-
-    // In simulated PRE, share_key = enc_key (all shares decrypt same ciphertext)
-    let share_key_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_key);
-
-    // Register with broker
-    let (broker_url, client) = {
-        let s = state.lock().unwrap();
-        (s.broker_url.clone(), s.client.clone())
+    // Encrypt using library Sender
+    let (payload_id, share_id, encrypted, share_key_bytes, broker_url, client) = {
+        let mut s = state.lock().await;
+        let (payload_id, share_id, encrypted, share_key_bytes) =
+            match s.sender.encrypt(plaintext.as_bytes()) {
+                Ok(result) => result,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": e.to_string()})),
+                    )
+                }
+            };
+        (
+            payload_id,
+            share_id,
+            encrypted,
+            share_key_bytes,
+            s.broker_url.clone(),
+            s.client.clone(),
+        )
     };
 
+    let payload_id_str = payload_id.to_string();
+    let share_id_str = share_id.to_string();
+    let blob_b64 = base64::engine::general_purpose::STANDARD.encode(encrypted.to_blob());
+    let share_key_b64 = base64::engine::general_purpose::STANDARD.encode(&share_key_bytes);
+
+    // Register with broker
     let broker_resp = client
         .post(format!("{broker_url}/register"))
         .json(&BrokerRegisterReq {
-            payload_id: payload_id.clone(),
+            payload_id: payload_id_str.clone(),
             encrypted_blob: blob_b64,
-            share_id: share_id.clone(),
+            share_id: share_id_str.clone(),
             share_key: share_key_b64,
         })
         .send()
@@ -173,27 +141,12 @@ async fn encrypt(
         }
     }
 
-    // Store keys locally — master_key never leaves this service
-    {
-        let mut s = state.lock().unwrap();
-        let mut shares = HashMap::new();
-        shares.insert(share_id.clone(), true);
-        s.payloads.insert(
-            payload_id.clone(),
-            PayloadEntry {
-                master_key,
-                enc_key,
-                shares,
-            },
-        );
-    }
-
     (
         StatusCode::CREATED,
         Json(serde_json::json!({
-            "payload_id": payload_id,
-            "share_id": share_id,
-            "share_token": share_id,
+            "payload_id": payload_id_str,
+            "share_id": share_id_str,
+            "share_token": share_id_str,
             "status": "registered"
         })),
     )
@@ -201,13 +154,23 @@ async fn encrypt(
 
 async fn share(
     State(state): State<AppState>,
-    Path(payload_id): Path<String>,
+    Path(payload_id_str): Path<String>,
 ) -> impl IntoResponse {
-    let (enc_key, broker_url, client) = {
-        let s = state.lock().unwrap();
-        let entry = match s.payloads.get(&payload_id) {
-            Some(e) => e,
-            None => {
+    let payload_id: uuid::Uuid = match payload_id_str.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid payload_id"})),
+            )
+        }
+    };
+
+    let (share_id, share_key_bytes, broker_url, client) = {
+        let s = state.lock().await;
+        let (share_id, share_key_bytes) = match s.sender.issue_share(&payload_id) {
+            Ok(result) => result,
+            Err(_) => {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({
@@ -216,17 +179,17 @@ async fn share(
                 )
             }
         };
-        (entry.enc_key.clone(), s.broker_url.clone(), s.client.clone())
+        (share_id, share_key_bytes, s.broker_url.clone(), s.client.clone())
     };
 
-    let share_id = uuid::Uuid::new_v4().to_string();
-    let share_key_b64 = base64::engine::general_purpose::STANDARD.encode(&enc_key);
+    let share_id_str = share_id.to_string();
+    let share_key_b64 = base64::engine::general_purpose::STANDARD.encode(&share_key_bytes);
 
     let broker_resp = client
         .post(format!("{broker_url}/add_share"))
         .json(&BrokerAddShareReq {
-            payload_id: payload_id.clone(),
-            share_id: share_id.clone(),
+            payload_id: payload_id_str.clone(),
+            share_id: share_id_str.clone(),
             share_key: share_key_b64,
         })
         .send()
@@ -255,19 +218,12 @@ async fn share(
         }
     }
 
-    {
-        let mut s = state.lock().unwrap();
-        if let Some(entry) = s.payloads.get_mut(&payload_id) {
-            entry.shares.insert(share_id.clone(), true);
-        }
-    }
-
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "payload_id": payload_id,
-            "share_id": share_id,
-            "share_token": share_id
+            "payload_id": payload_id_str,
+            "share_id": share_id_str,
+            "share_token": share_id_str
         })),
     )
 }
@@ -288,13 +244,7 @@ async fn revoke(
     };
 
     let (broker_url, client) = {
-        let s = state.lock().unwrap();
-        if !s.payloads.contains_key(&payload_id) {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "unknown payload"})),
-            );
-        }
+        let s = state.lock().await;
         (s.broker_url.clone(), s.client.clone())
     };
 
@@ -310,13 +260,6 @@ async fn revoke(
         Ok(resp) if resp.status().as_u16() == 200 => {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             let receipt = body.get("receipt").cloned().unwrap_or_default();
-
-            {
-                let mut s = state.lock().unwrap();
-                if let Some(entry) = s.payloads.get_mut(&payload_id) {
-                    entry.shares.remove(&share_id);
-                }
-            }
 
             (
                 StatusCode::OK,
@@ -361,7 +304,7 @@ async fn main() {
         std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
 
     let sender_state = Arc::new(Mutex::new(SenderState {
-        payloads: HashMap::new(),
+        sender: Sender::new(),
         broker_url,
         client: reqwest::Client::new(),
     }));
