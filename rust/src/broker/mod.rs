@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use anyhow::{Result, anyhow};
-use uuid::Uuid;
 use crate::crypto::{PayloadId, ShareId, generate_destruction_proof, hash_ciphertext};
 
 /// Status of a share

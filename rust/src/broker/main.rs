@@ -12,7 +12,8 @@ use axum::{
 };
 use clawback::broker::Broker;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // ── Request / Response types ────────────────────────────────────────────────
 
@@ -49,7 +50,7 @@ async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
-    let mut broker = state.lock().unwrap();
+    let mut broker = state.lock().await;
 
     let payload_id: uuid::Uuid = match req.payload_id.parse() {
         Ok(id) => id,
@@ -123,7 +124,7 @@ async fn add_share(
     State(state): State<AppState>,
     Json(req): Json<AddShareRequest>,
 ) -> impl IntoResponse {
-    let mut broker = state.lock().unwrap();
+    let mut broker = state.lock().await;
 
     let payload_id: uuid::Uuid = match req.payload_id.parse() {
         Ok(id) => id,
@@ -177,7 +178,7 @@ async fn fetch(
     Path(payload_id_str): Path<String>,
     Query(query): Query<FetchQuery>,
 ) -> impl IntoResponse {
-    let broker = state.lock().unwrap();
+    let broker = state.lock().await;
 
     let payload_id: uuid::Uuid = match payload_id_str.parse() {
         Ok(id) => id,
@@ -243,7 +244,7 @@ async fn revoke(
     Path(payload_id_str): Path<String>,
     Json(req): Json<RevokeRequest>,
 ) -> impl IntoResponse {
-    let mut broker = state.lock().unwrap();
+    let mut broker = state.lock().await;
 
     let payload_id: uuid::Uuid = match payload_id_str.parse() {
         Ok(id) => id,
@@ -283,7 +284,7 @@ async fn receipts(
     State(state): State<AppState>,
     Path(payload_id_str): Path<String>,
 ) -> impl IntoResponse {
-    let broker = state.lock().unwrap();
+    let broker = state.lock().await;
 
     let payload_id: uuid::Uuid = match payload_id_str.parse() {
         Ok(id) => id,

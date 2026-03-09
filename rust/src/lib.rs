@@ -1,5 +1,5 @@
 // Clawback Protocol — Rust Core Library
-// 
+//
 // This library implements the cryptographic primitives and protocol logic
 // for the Clawback Protocol.
 //
@@ -15,4 +15,4 @@ pub mod sender;
 pub mod receiver;
 
 // Re-export core types
-pub use crypto::{MasterKey, ShareKey, EncKey, PayloadId, ShareId};
+pub use crypto::{MasterKey, ShareKey, EncKey, EncryptedPayload, PayloadId, ShareId};
