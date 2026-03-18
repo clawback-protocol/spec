@@ -1,21 +1,44 @@
-// Clawback Protocol — Receiver Module
+// Clawback Protocol — Receiver Module (True PRE)
 //
 // The Receiver:
-// - Presents share_token to Broker
-// - Receives encrypted blob + share_key
-// - Decrypts locally via ShareKey
-// - Loses access instantly on revocation (next request → 403)
+// - Holds own key pair (SecretKey, PublicKey)
+// - Shares PublicKey with sender for kfrag generation
+// - Receives cfrags (re-encrypted capsule fragments) from broker
+// - Decrypts locally using own SecretKey + cfrags + sender's PublicKey
+// - Loses access instantly on revocation (broker can't produce cfrags)
 
-use anyhow::Result;
-use crate::crypto::{ShareKey, EncryptedPayload};
+use anyhow::{Result, anyhow};
+use crate::crypto::{
+    SecretKey, PublicKey, Capsule, VerifiedCapsuleFrag,
+};
 
-pub struct Receiver;
+pub struct Receiver {
+    sk: SecretKey,
+}
 
 impl Receiver {
-    /// Decrypt a payload using the share key bytes received from the Broker.
-    /// Constructs a ShareKey from raw bytes, then decrypts the EncryptedPayload.
-    pub fn decrypt(share_key_bytes: &[u8], payload: &EncryptedPayload) -> Result<Vec<u8>> {
-        let share_key = ShareKey::from_bytes(share_key_bytes)?;
-        share_key.decrypt(payload)
+    /// Create a new receiver with a fresh key pair
+    pub fn new() -> Self {
+        Self { sk: SecretKey::random() }
+    }
+
+    /// Return this receiver's public key (for sender to generate kfrags)
+    pub fn public_key(&self) -> PublicKey {
+        self.sk.public_key()
+    }
+
+    /// Decrypt a re-encrypted payload using cfrags from the broker.
+    /// Requires the sender's delegating public key, the capsule, and cfrags.
+    pub fn decrypt(
+        &self,
+        delegating_pk: &PublicKey,
+        capsule: &Capsule,
+        cfrags: Vec<VerifiedCapsuleFrag>,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        let plaintext = umbral_pre::decrypt_reencrypted(
+            &self.sk, delegating_pk, capsule, cfrags, ciphertext,
+        ).map_err(|e| anyhow!("decryption failed: {e}"))?;
+        Ok(plaintext.to_vec())
     }
 }

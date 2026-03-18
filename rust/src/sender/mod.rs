@@ -1,18 +1,35 @@
-// Clawback Protocol — Sender Module
+// Clawback Protocol — Sender Module (True PRE)
 //
 // The Sender owns the data:
-// - Generates master key per payload (NEVER transmitted)
-// - Encrypts plaintext locally via EncKey (HKDF-derived from master key)
-// - In simulated PRE, share_key = enc_key for all recipients
-// - Issues share tokens, delegates revocation to broker
+// - Generates a key pair per payload (SecretKey never transmitted)
+// - Encrypts plaintext to own PublicKey via Umbral
+// - Generates re-encryption key fragments (kfrags) delegating to each receiver
+// - Delegates revocation to broker (broker destroys kfrags)
 
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
-use crate::crypto::{MasterKey, EncKey, PayloadId, ShareId, EncryptedPayload};
+use crate::crypto::{PayloadId, ShareId, SecretKey, PublicKey, Signer, Capsule, VerifiedKeyFrag};
 
 struct PayloadEntry {
-    _master_key: MasterKey,
-    enc_key: EncKey,
+    delegating_sk: SecretKey,
+    signer: Signer,
+}
+
+/// Result of encrypting a payload — everything the broker needs to store
+pub struct EncryptResult {
+    pub payload_id: PayloadId,
+    pub share_id: ShareId,
+    pub capsule: Capsule,
+    pub ciphertext: Vec<u8>,
+    pub kfrags: Vec<VerifiedKeyFrag>,
+    pub delegating_pk: PublicKey,
+    pub verifying_pk: PublicKey,
+}
+
+/// Result of issuing a new share — kfrags for the broker
+pub struct ShareResult {
+    pub share_id: ShareId,
+    pub kfrags: Vec<VerifiedKeyFrag>,
 }
 
 pub struct Sender {
@@ -26,31 +43,69 @@ impl Sender {
         }
     }
 
-    /// Encrypt plaintext and prepare for broker registration.
-    /// Returns (payload_id, share_id, encrypted_payload, share_key_bytes).
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(PayloadId, ShareId, EncryptedPayload, Vec<u8>)> {
-        let master_key = MasterKey::generate();
-        let enc_key = master_key.derive_enc_key();
+    /// Encrypt plaintext and generate kfrags for a specific receiver.
+    /// The sender encrypts to their own public key; kfrags delegate decryption
+    /// to the receiver via the broker's re-encryption.
+    pub fn encrypt(
+        &mut self,
+        plaintext: &[u8],
+        receiver_pk: &PublicKey,
+    ) -> Result<EncryptResult> {
+        let delegating_sk = SecretKey::random();
+        let signer = Signer::new(SecretKey::random());
+
+        // Derive delegating public key for encryption
+        let delegating_pk = delegating_sk.public_key();
+
+        // Encrypt to sender's own public key
+        let (capsule, ciphertext) = umbral_pre::encrypt(&delegating_pk, plaintext)
+            .map_err(|e| anyhow!("encryption failed: {e}"))?;
+
+        // Generate kfrags delegating decryption to receiver
+        let kfrags = umbral_pre::generate_kfrags(
+            &delegating_sk, receiver_pk, &signer,
+            1, 1, true, true,
+        );
+
         let payload_id = PayloadId::new_v4();
         let share_id = ShareId::new_v4();
 
-        let encrypted = enc_key.encrypt(plaintext)?;
-        let share_key_bytes = enc_key.as_bytes().to_vec();
+        // Derive again for the result (originals stored in PayloadEntry)
+        let result_pk = delegating_sk.public_key();
+        let result_vk = signer.verifying_key();
 
         self.payloads.insert(payload_id, PayloadEntry {
-            _master_key: master_key,
-            enc_key,
+            delegating_sk,
+            signer,
         });
 
-        Ok((payload_id, share_id, encrypted, share_key_bytes))
+        Ok(EncryptResult {
+            payload_id,
+            share_id,
+            capsule,
+            ciphertext: ciphertext.to_vec(),
+            kfrags: kfrags.to_vec(),
+            delegating_pk: result_pk,
+            verifying_pk: result_vk,
+        })
     }
 
-    /// Issue a new share for an existing payload.
-    /// Returns (share_id, share_key_bytes) — same enc_key for simulated PRE.
-    pub fn issue_share(&self, payload_id: &PayloadId) -> Result<(ShareId, Vec<u8>)> {
+    /// Issue a new share for an existing payload to a different receiver.
+    /// Generates fresh kfrags targeted at the new receiver's public key.
+    pub fn issue_share(
+        &self,
+        payload_id: &PayloadId,
+        receiver_pk: &PublicKey,
+    ) -> Result<ShareResult> {
         let entry = self.payloads.get(payload_id)
             .ok_or_else(|| anyhow!("unknown payload"))?;
+
+        let kfrags = umbral_pre::generate_kfrags(
+            &entry.delegating_sk, receiver_pk, &entry.signer,
+            1, 1, true, true,
+        );
+
         let share_id = ShareId::new_v4();
-        Ok((share_id, entry.enc_key.as_bytes().to_vec()))
+        Ok(ShareResult { share_id, kfrags: kfrags.to_vec() })
     }
 }
