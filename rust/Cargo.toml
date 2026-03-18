@@ -19,6 +19,10 @@ path = "src/sender/main.rs"
 name = "receiver"
 path = "src/receiver/main.rs"
 
+[[bin]]
+name = "clawback-verify"
+path = "src/bin/verify.rs"
+
 [lib]
 name = "clawback"
 path = "src/lib.rs"
