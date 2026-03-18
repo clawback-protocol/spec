@@ -1,9 +1,9 @@
 [package]
 name = "clawback-protocol"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Maurice Ferdinand <hello@clawbackprotocol.org>"]
-description = "Clawback Protocol — cryptographically enforced, revocable data sharing with true Proxy Re-Encryption"
+description = "Clawback Protocol — cryptographically enforced, revocable data sharing"
 license = "AGPL-3.0"
 repository = "https://github.com/clawback-protocol/spec"
 
@@ -24,12 +24,14 @@ name = "clawback"
 path = "src/lib.rs"
 
 [dependencies]
-# Proxy Re-Encryption (Umbral PRE, arXiv:1707.06140)
-umbral-pre = { version = "0.11", features = ["default-serialization"] }
-
-# Destruction receipts (HMAC-SHA256) + ciphertext hashing
+# Crypto
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
 sha2 = "0.10"
 hmac = "0.12"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

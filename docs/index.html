@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Clawback Protocol — Cryptographically enforced, revocable data sharing with provable destruction.">
+  <meta property="og:title" content="Clawback Protocol">
+  <meta property="og:description" content="You shared it. You can unshare it.">
+  <meta property="og:image" content="https://clawbackprotocol.org/logo.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@ClawbackHQ">
+  <title>Clawback Protocol</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy: #0D1117;
+      --navy-light: #161B22;
+      --blue: #58A6FF;
+      --purple: #8B5CF6;
+      --white: #F0F6FC;
+      --muted: #8B949E;
+      --border: #21262D;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--navy);
+      color: var(--white);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: rgba(13, 17, 23, 0.95);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 600;
+      font-size: 1rem;
+      color: var(--white);
+      text-decoration: none;
+    }
+
+    .nav-logo img {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 1.5rem;
+      align-items: center;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--white); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1.25rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--blue);
+      color: #0D1117;
+    }
+
+    .btn-primary:hover {
+      background: #79b8ff;
+      transform: translateY(-1px);
+    }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--white);
+      border: 1px solid var(--border);
+    }
+
+    .btn-outline:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+      transform: translateY(-1px);
+    }
+
+    /* ── Hero ── */
+    .hero {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 6rem 2rem 4rem;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.3rem 0.9rem;
+      background: rgba(88, 166, 255, 0.1);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+      border-radius: 100px;
+      font-size: 0.8rem;
+      color: var(--blue);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 2rem;
+    }
+
+    .hero-logo {
+      width: 120px;
+      height: 120px;
+      border-radius: 24px;
+      margin: 0 auto 2rem;
+      display: block;
+      box-shadow: 0 0 60px rgba(88, 166, 255, 0.2);
+    }
+
+    h1 {
+      font-size: clamp(2.5rem, 6vw, 4rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin-bottom: 1rem;
+    }
+
+    .tagline {
+      font-size: clamp(1.25rem, 3vw, 1.75rem);
+      color: var(--blue);
+      font-weight: 500;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-desc {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 600px;
+      margin: 0 auto 2.5rem;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    /* ── Properties ── */
+    .properties {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+    }
+
+    .section-label {
+      text-align: center;
+      font-size: 0.8rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--blue);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 1rem;
+    }
+
+    .section-title {
+      text-align: center;
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 600;
+      margin-bottom: 3rem;
+    }
+
+    .props-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .prop-card {
+      background: var(--navy-light);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: border-color 0.2s;
+    }
+
+    .prop-card:hover {
+      border-color: rgba(88, 166, 255, 0.4);
+    }
+
+    .prop-icon {
+      font-size: 1.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .prop-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .prop-desc {
+      font-size: 0.9rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* ── How it works ── */
+    .how {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+    }
+
+    .flow {
+      background: var(--navy-light);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      line-height: 2;
+      color: var(--muted);
+    }
+
+    .flow .step { color: var(--white); }
+    .flow .arrow { color: var(--blue); }
+    .flow .revoke { color: #ff7b72; }
+    .flow .receipt { color: #3fb950; }
+
+    /* ── Stack ── */
+    .stack {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+    }
+
+    .stack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .stack-item {
+      background: var(--navy-light);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .stack-label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .stack-value {
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: var(--blue);
+    }
+
+    /* ── CTA ── */
+    .cta {
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 4rem 2rem 6rem;
+      text-align: center;
+    }
+
+    .cta h2 {
+      font-size: clamp(1.5rem, 3vw, 2.25rem);
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .cta p {
+      color: var(--muted);
+      margin-bottom: 2rem;
+      font-size: 1rem;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--blue); }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    /* ── Glow effect ── */
+    .glow {
+      position: fixed;
+      top: -20%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 600px;
+      height: 400px;
+      background: radial-gradient(ellipse, rgba(88, 166, 255, 0.06) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    @media (max-width: 600px) {
+      nav { padding: 1rem; }
+      .nav-links { gap: 1rem; }
+      .hero { padding: 4rem 1.5rem 3rem; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="glow"></div>
+
+<!-- Nav -->
+<nav>
+  <a href="/" class="nav-logo">
+    <span>Clawback Protocol</span>
+  </a>
+  <div class="nav-links">
+    <a href="https://github.com/clawback-protocol/spec" target="_blank">GitHub</a>
+    <a href="https://github.com/clawback-protocol/spec/blob/main/spec/whitepaper-v0.1.md" target="_blank">Whitepaper</a>
+    <a href="https://x.com/ClawbackHQ" target="_blank">@ClawbackHQ</a>
+    <a href="https://github.com/clawback-protocol/spec" target="_blank" class="btn btn-primary">View Repo →</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="badge">⬡ AGPLv3 · Open Protocol · USPTO #99657348</div>
+  <h1>Clawback Protocol</h1>
+  <p class="tagline">You shared it. You can unshare it.</p>
+  <p class="hero-desc">
+    Cryptographically enforced, revocable, time-limited data sharing with provable destruction.
+    Not a policy. A mathematical guarantee.
+  </p>
+  <div class="hero-actions">
+    <a href="https://github.com/clawback-protocol/spec" target="_blank" class="btn btn-primary">View on GitHub →</a>
+    <a href="https://github.com/clawback-protocol/spec/blob/main/spec/whitepaper-v0.1.md" target="_blank" class="btn btn-outline">Read the Whitepaper</a>
+  </div>
+</section>
+
+<!-- Properties -->
+<section class="properties">
+  <p class="section-label">Core Properties</p>
+  <h2 class="section-title">Data revocation as a first-class primitive</h2>
+  <div class="props-grid">
+    <div class="prop-card">
+      <div class="prop-icon">🔐</div>
+      <div class="prop-title">Zero-Knowledge Broker</div>
+      <div class="prop-desc">The broker stores encrypted payloads and never sees plaintext. Your data stays yours.</div>
+    </div>
+    <div class="prop-card">
+      <div class="prop-icon">⚡</div>
+      <div class="prop-title">Instant Revocation</div>
+      <div class="prop-desc">Revoke access in real time. The share key is destroyed on the broker — access becomes mathematically impossible.</div>
+    </div>
+    <div class="prop-card">
+      <div class="prop-icon">📋</div>
+      <div class="prop-title">Provable Destruction</div>
+      <div class="prop-desc">Tamper-evident destruction receipts prove deletion cryptographically. Not "trust us" — math.</div>
+    </div>
+    <div class="prop-card">
+      <div class="prop-icon">🔑</div>
+      <div class="prop-title">Per-Share Keys</div>
+      <div class="prop-desc">Each recipient gets a unique derived key. Revoke one share without affecting others.</div>
+    </div>
+    <div class="prop-card">
+      <div class="prop-icon">⏱️</div>
+      <div class="prop-title">Time-Limited Access</div>
+      <div class="prop-desc">Set expiry on any share. Access auto-revokes when the window closes — no action required.</div>
+    </div>
+    <div class="prop-card">
+      <div class="prop-icon">🌐</div>
+      <div class="prop-title">Open Standard</div>
+      <div class="prop-desc">AGPLv3. Designed for IETF standardization. Built to become an internet primitive, not a product.</div>
+    </div>
+  </div>
+</section>
+
+<!-- How it works -->
+<section class="how">
+  <p class="section-label">Protocol Flow</p>
+  <h2 class="section-title" style="margin-bottom:2rem;">How it works</h2>
+  <div class="flow">
+    <div><span class="step">Sender</span> encrypts data locally → registers with Broker</div>
+    <div class="arrow">  ↓</div>
+    <div><span class="step">Broker</span> holds ciphertext + per-share key (never sees plaintext)</div>
+    <div class="arrow">  ↓</div>
+    <div><span class="step">Receiver</span> presents share token → gets encrypted blob + share key</div>
+    <div class="arrow">  ↓</div>
+    <div><span class="step">Receiver</span> decrypts locally → reads plaintext</div>
+    <div class="arrow">  ↓</div>
+    <div><span class="revoke">Sender revokes</span> → Broker destroys share key instantly</div>
+    <div class="arrow">  ↓</div>
+    <div><span class="step">Receiver</span> tries again → <span class="revoke">403 REVOKED</span></div>
+    <div class="arrow">  ↓</div>
+    <div><span class="receipt">Destruction receipt logged</span> → cryptographic proof of deletion</div>
+  </div>
+</section>
+
+<!-- Crypto Stack -->
+<section class="stack">
+  <p class="section-label">Cryptographic Stack</p>
+  <h2 class="section-title">Built on proven primitives</h2>
+  <div class="stack-grid">
+    <div class="stack-item">
+      <span class="stack-label">Key Exchange</span>
+      <span class="stack-value">X25519</span>
+    </div>
+    <div class="stack-item">
+      <span class="stack-label">Encryption</span>
+      <span class="stack-value">ChaCha20-Poly1305</span>
+    </div>
+    <div class="stack-item">
+      <span class="stack-label">Key Derivation</span>
+      <span class="stack-value">HKDF-SHA256</span>
+    </div>
+    <div class="stack-item">
+      <span class="stack-label">Destruction Proof</span>
+      <span class="stack-value">HMAC-SHA256</span>
+    </div>
+    <div class="stack-item">
+      <span class="stack-label">Reference Impl</span>
+      <span class="stack-value">Rust + axum</span>
+    </div>
+    <div class="stack-item">
+      <span class="stack-label">Future</span>
+      <span class="stack-value">Umbral PRE + ZK</span>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+  <h2>Build on Clawback Protocol</h2>
+  <p>Open source, AGPLv3. Reference implementation in Rust. Whitepaper available. Contributions welcome.</p>
+  <div class="hero-actions">
+    <a href="https://github.com/clawback-protocol/spec" target="_blank" class="btn btn-primary">View on GitHub →</a>
+    <a href="mailto:hello@clawbackprotocol.org" class="btn btn-outline">Get in Touch</a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/clawback-protocol/spec" target="_blank">GitHub</a>
+    <a href="https://x.com/ClawbackHQ" target="_blank">@ClawbackHQ</a>
+    <a href="mailto:hello@clawbackprotocol.org">hello@clawbackprotocol.org</a>
+    <a href="https://github.com/clawback-protocol/spec/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
+  </div>
+  <p>© 2026 Secundus Nulli LLC d/b/a Clawback Protocol · USPTO Serial No. 99657348 · AGPLv3</p>
+</footer>
+
+</body>
+</html>
