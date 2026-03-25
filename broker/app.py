@@ -1,5 +1,5 @@
 """
-Clawback Protocol — Broker Service (port 5000)
+Clawback Protocol — Broker Service (port 8000)
 
 The broker is a blind intermediary:
   - Stores encrypted payloads (never sees plaintext)
