@@ -43,9 +43,9 @@ There's no "please delete this" request. No trust required. When you revoke, the
 
 | Service | Port | Role |
 |---------|------|------|
-| **Broker** | 5000 | Blind intermediary. Stores encrypted blobs + share keys. Never sees plaintext. |
-| **Sender** | 5001 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
-| **Receiver** | 5002 | Fetches blob + share key from broker. Decrypts locally. |
+| **Broker** | 8000 | Blind intermediary. Stores encrypted blobs + share keys. Never sees plaintext. |
+| **Sender** | 8001 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
+| **Receiver** | 8002 | Fetches blob + share key from broker. Decrypts locally. |
 
 ---
 

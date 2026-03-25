@@ -1,5 +1,5 @@
 """
-Clawback Protocol — Sender Service (port 5001)
+Clawback Protocol — Sender Service (port 8001)
 
 The sender owns the data. They:
   - Generate an X25519 keypair (master key, never leaves this service)

@@ -286,11 +286,8 @@ fn broker_unreachable_still_verifies_proof() {
         .unwrap_or_else(|e| panic!("Bad JSON output: {e}\nstdout: {stdout}"));
 
     // Proof is valid, but broker unreachable — verdict depends on implementation
-    // Current impl: VERIFIED if proof_valid && broker_confirmed != Some(false)
-    // broker_confirmed is None when unreachable, so verdict is VERIFIED
     assert_eq!(result["proof_valid"], true);
     assert!(result["broker_confirmed"].is_null(), "broker_confirmed should be null when unreachable");
-    // But there should be an error about not reaching the broker
     let errors = result["errors"].as_array().unwrap();
     assert!(errors.iter().any(|e| e.as_str().unwrap().contains("Could not reach broker")));
 
@@ -329,34 +326,26 @@ fn human_output_shows_verified() {
 #[test]
 fn full_lifecycle_with_broker_module() {
     // Use the actual Broker module to create a real receipt, then verify it
-    use clawback::crypto::*;
+    use clawback::crypto::hash_ciphertext;
 
     let broker_secret = b"lifecycle-test-secret";
     let mut broker = clawback::broker::Broker::new(broker_secret);
 
     // Sender encrypts
-    let delegating_sk = SecretKey::random();
-    let delegating_pk = delegating_sk.public_key();
-    let signer = Signer::new(SecretKey::random());
-    let receiving_sk = SecretKey::random();
-    let receiving_pk = receiving_sk.public_key();
+    let mut sender = clawback::sender::Sender::new();
+    let (payload_id, share_id, encrypted, share_key_bytes) =
+        sender.encrypt(b"Clawback lifecycle test data").unwrap();
 
-    let plaintext = b"Clawback lifecycle test data";
-    let (capsule, ciphertext) = encrypt(&delegating_pk, plaintext).unwrap();
-
-    let kfrags = generate_kfrags(&delegating_sk, &receiving_pk, &signer, 1, 1, true, true);
-
-    let payload_id = PayloadId::new_v4();
-    let share_id = uuid::Uuid::new_v4();
+    let expected_hash = hash_ciphertext(&encrypted.ciphertext);
 
     broker.register(
-        payload_id, ciphertext.to_vec(), capsule,
-        delegating_pk, signer.verifying_key(),
-        share_id, kfrags.to_vec(), receiving_pk,
+        payload_id, encrypted.ciphertext, encrypted.nonce,
+        share_id, share_key_bytes,
     );
 
     // Revoke — get destruction receipt
     let receipt = broker.revoke(&payload_id, &share_id).unwrap();
+    assert_eq!(receipt.data_hash, expected_hash);
 
     // Serialize receipt to JSON
     let receipt_json = serde_json::to_string_pretty(&receipt).unwrap();
