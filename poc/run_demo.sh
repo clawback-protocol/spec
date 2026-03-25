@@ -67,11 +67,11 @@ sleep 1
 # Quick health check — retry while services warm up
 step "Waiting for services to be ready..."
 RETRIES=12
-until curl -sf http://localhost:8000/receipts/health > /dev/null 2>&1 || [ "$RETRIES" -eq 0 ]; do
+until curl -sf http://localhost:8000/receipts/00000000-0000-0000-0000-000000000000 > /dev/null 2>&1 || [ "$RETRIES" -eq 0 ]; do
   sleep 1
   RETRIES=$((RETRIES - 1))
 done
-if ! curl -sf http://localhost:8000/receipts/health > /dev/null 2>&1; then
+if ! curl -sf http://localhost:8000/receipts/00000000-0000-0000-0000-000000000000 > /dev/null 2>&1; then
   fail "Broker not responding after 12s. Check /tmp/clawback-broker.log"
   cat /tmp/clawback-broker.log
   exit 1
@@ -146,7 +146,7 @@ fi
 banner "Step 5: Destruction Receipt"
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Fetching ZK-style destruction receipt from broker..."
+step "Fetching destruction receipt from broker..."
 RECEIPT_RESP=$(curl -sf http://localhost:8000/receipts/$PAYLOAD_ID)
 echo "$RECEIPT_RESP" | python3 -m json.tool
 

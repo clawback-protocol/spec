@@ -1,31 +1,5 @@
 // Clawback Protocol — Crypto Module
 //
-<<<<<<< HEAD
-// True Proxy Re-Encryption via Umbral (arXiv:1707.06140).
-//
-// Key hierarchy:
-//   Sender key pair (SecretKey, PublicKey) — sender owns, never shared
-//   Receiver key pair (SecretKey, PublicKey) — receiver owns
-//   KeyFrags — re-encryption key fragments, held by broker
-//   Capsule — encapsulated symmetric key, stored alongside ciphertext
-//
-// Flow:
-//   1. Sender encrypts to own PublicKey → (Capsule, ciphertext)
-//   2. Sender generates kfrags delegating decryption to receiver's PublicKey
-//   3. Broker stores kfrags, performs re-encryption on fetch → cfrags
-//   4. Receiver decrypts with own SecretKey + cfrags
-//   5. Revocation = broker destroys kfrags → re-encryption impossible
-
-// Re-export Umbral PRE types used across the protocol
-pub use umbral_pre::{
-    encrypt, decrypt_original, decrypt_reencrypted,
-    generate_kfrags, reencrypt,
-    Capsule, CapsuleFrag, KeyFrag, VerifiedCapsuleFrag, VerifiedKeyFrag,
-    PublicKey, SecretKey, Signer,
-};
-
-use hmac::{Hmac, Mac};
-=======
 // Implements all cryptographic primitives:
 // - X25519 key generation (master key)
 // - HKDF-SHA256 key derivation (enc_key)
@@ -44,7 +18,6 @@ use chacha20poly1305::{
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
->>>>>>> origin/main
 use sha2::Sha256;
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
@@ -52,8 +25,6 @@ use sha2::Sha256;
 pub type PayloadId = uuid::Uuid;
 pub type ShareId = uuid::Uuid;
 
-<<<<<<< HEAD
-=======
 /// Master key — 32 bytes, Sender ONLY, never transmitted
 #[derive(Clone, zeroize::Zeroize)]
 pub struct MasterKey([u8; 32]);
@@ -166,7 +137,6 @@ impl ShareKey {
     }
 }
 
->>>>>>> origin/main
 // ── Destruction receipts ──────────────────────────────────────────────────────
 
 /// Generate a destruction proof: HMAC-SHA256(broker_secret, payload_id || revoked_at)
@@ -198,72 +168,6 @@ mod tests {
     use super::*;
 
     #[test]
-<<<<<<< HEAD
-    fn test_pre_encrypt_decrypt_original() {
-        let delegating_sk = SecretKey::random();
-        let delegating_pk = delegating_sk.public_key();
-
-        let plaintext = b"This is sensitive data - Reese";
-        let (capsule, ciphertext) = encrypt(&delegating_pk, plaintext).unwrap();
-
-        let decrypted = decrypt_original(&delegating_sk, &capsule, &ciphertext).unwrap();
-        assert_eq!(&*decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_pre_full_roundtrip() {
-        let delegating_sk = SecretKey::random();
-        let delegating_pk = delegating_sk.public_key();
-        let signer = Signer::new(SecretKey::random());
-
-        let receiving_sk = SecretKey::random();
-        let receiving_pk = receiving_sk.public_key();
-
-        let plaintext = b"Shared with recipient via PRE";
-        let (capsule, ciphertext) = encrypt(&delegating_pk, plaintext).unwrap();
-
-        let verified_kfrags = generate_kfrags(
-            &delegating_sk, &receiving_pk, &signer,
-            1, 1, true, true,
-        );
-
-        let cfrags: Vec<VerifiedCapsuleFrag> = verified_kfrags.iter()
-            .map(|vkf| reencrypt(&capsule, vkf.clone()))
-            .collect();
-
-        let decrypted = decrypt_reencrypted(
-            &receiving_sk, &delegating_pk, &capsule, cfrags, &ciphertext,
-        ).unwrap();
-        assert_eq!(&*decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_pre_multiple_receivers() {
-        let delegating_sk = SecretKey::random();
-        let delegating_pk = delegating_sk.public_key();
-        let signer = Signer::new(SecretKey::random());
-
-        let plaintext = b"Shared with multiple recipients";
-        let (capsule, ciphertext) = encrypt(&delegating_pk, plaintext).unwrap();
-
-        for _ in 0..2 {
-            let receiving_sk = SecretKey::random();
-            let receiving_pk = receiving_sk.public_key();
-
-            let verified_kfrags = generate_kfrags(
-                &delegating_sk, &receiving_pk, &signer,
-                1, 1, true, true,
-            );
-            let cfrags: Vec<VerifiedCapsuleFrag> = verified_kfrags.iter()
-                .map(|vkf| reencrypt(&capsule, vkf.clone()))
-                .collect();
-
-            let decrypted = decrypt_reencrypted(
-                &receiving_sk, &delegating_pk, &capsule, cfrags, &ciphertext,
-            ).unwrap();
-            assert_eq!(&*decrypted, plaintext);
-        }
-=======
     fn test_encrypt_decrypt_roundtrip() {
         let master = MasterKey::generate();
         let enc_key = master.derive_enc_key();
@@ -304,7 +208,6 @@ mod tests {
 
         let share_key = ShareKey::from_bytes(enc_key.as_bytes()).unwrap();
         assert_eq!(share_key.decrypt(&restored).unwrap(), b"test payload");
->>>>>>> origin/main
     }
 
     #[test]
@@ -314,10 +217,6 @@ mod tests {
             &PayloadId::new_v4(),
             "2026-03-06T17:30:00Z",
         );
-<<<<<<< HEAD
-        assert_eq!(proof.len(), 64);
-=======
         assert_eq!(proof.len(), 64); // 32 bytes hex-encoded
->>>>>>> origin/main
     }
 }

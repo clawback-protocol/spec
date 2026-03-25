@@ -12,10 +12,14 @@ This file gives Claude Code the context needed to contribute effectively.
 
 Core properties:
 - Sender encrypts locally — broker never sees plaintext
-- Each recipient gets a unique per-share derived key (never the master key)
 - Revocation is instant — broker destroys the share key
-- Destruction is provable — HMAC receipt logged append-only
+- Destruction is auditable — HMAC receipt logged append-only
 - Zero trust required from receiver
+
+> **PoC limitation**: The broker currently holds the actual decryption key
+> (share_key == enc_key). A compromised broker can decrypt. True Proxy
+> Re-Encryption (Umbral) is on the roadmap to make the broker cryptographically
+> blind. All shares for a payload currently use the same key bytes.
 
 Trademark: USPTO Serial No. 99657348 (filed 2026-03-06)
 Owner: Secundus Nulli LLC / Eternal Light Trust
@@ -69,18 +73,20 @@ clawback-protocol/spec/
 ```
 master_key  (32 bytes, Sender ONLY, never transmitted)
      │
-     ├── enc_key  = HKDF(master_key, salt, info="payload-encryption")
-     │   └── Encrypts payload with ChaCha20-Poly1305
-     │
-     └── share_key_N = HKDF(master_key, salt, info=share_id_N)
-         └── Unique per recipient — stored on Broker
-         └── Receiver decrypts using this key
+     └── enc_key  = HKDF(master_key, salt, info="payload-encryption")
+         ├── Encrypts payload with ChaCha20-Poly1305
+         └── share_key = enc_key  (PoC: same key stored on Broker per share)
+             └── Receiver decrypts using this key
+
+NOTE (PoC): All shares for a payload use the same enc_key bytes.
+In production PRE (Umbral), each share would get a unique re-encryption
+key derived from the receiver's public key.
 ```
 
 ### Protocol Flow
-1. Sender generates master_key (X25519)
+1. Sender generates master_key (random 32 bytes)
 2. Sender encrypts plaintext → ciphertext (ChaCha20-Poly1305 + enc_key)
-3. Sender derives share_key for recipient (HKDF)
+3. Sender sets share_key = enc_key (PoC; true PRE would derive per-recipient)
 4. Sender registers (payload_id, ciphertext, share_key) with Broker
 5. Sender issues share_token (share_id UUID) to Receiver
 6. Receiver presents share_token → Broker returns (ciphertext, share_key)
@@ -145,12 +151,12 @@ The Rust implementation should use these crates:
 
 ---
 
-## Security Properties to Preserve
+## Security Properties
 
-1. **Confidentiality** — Broker holds only ciphertext, never plaintext or enc_key
+1. **Confidentiality** — Broker holds ciphertext and share keys, never plaintext. **PoC caveat:** broker holds enc_key (can decrypt); true PRE would hold only re-encryption keys (cannot decrypt).
 2. **Revocation soundness** — Post-revocation access must return 403
-3. **Share isolation** — Revoking share N does not affect share M
-4. **Destruction verifiability** — Receipt must be tamper-evident and append-only
+3. **Share isolation** — Revoking share N does not affect share M. **PoC caveat:** isolation is enforced by broker access control, not by distinct keys (all shares use same enc_key).
+4. **Destruction verifiability** — HMAC-signed receipts provide an auditable record. **PoC caveat:** receipts are broker self-assertions, not independently verifiable proofs.
 
 ---
 

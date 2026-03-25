@@ -1,5 +1,5 @@
 """
-Clawback Protocol — Receiver Service (port 5002)
+Clawback Protocol — Receiver Service (port 8002)
 
 The receiver:
   - Has a share token (share_id) from the sender

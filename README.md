@@ -43,9 +43,9 @@ There's no "please delete this" request. No trust required. When you revoke, the
 
 | Service | Port | Role |
 |---------|------|------|
-| **Broker** | 5000 | Blind intermediary. Stores encrypted blobs + share keys. Never sees plaintext. |
-| **Sender** | 5001 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
-| **Receiver** | 5002 | Fetches blob + share key from broker. Decrypts locally. |
+| **Broker** | 8000 | Semi-trusted intermediary. Stores encrypted blobs + share keys. Never sees plaintext, but holds decryption keys in this PoC (see [Limitations](#limitations)). |
+| **Sender** | 8001 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
+| **Receiver** | 8002 | Fetches blob + share key from broker. Decrypts locally. |
 
 ---
 
@@ -62,7 +62,7 @@ master_key = random 32 bytes              (Sender only, never shared)
 enc_key    = HKDF(master_key, info="payload-encryption")
 ciphertext = ChaCha20Poly1305.encrypt(plaintext, enc_key)
 
-share_key  = HKDF(master_key, info=share_id)   ← unique per recipient
+share_key  = enc_key                             ← same key per share (simulated PRE)
 ```
 
 The broker stores `(ciphertext, share_key)`. The receiver gets both and decrypts.  
@@ -72,13 +72,21 @@ Without the key, decryption is impossible. The master key never left the sender.
 ### Why This Works
 
 - **Master key isolation**: Sender's master key is never transmitted anywhere
-- **Per-share derivation**: Each recipient gets a unique key derived via HKDF
 - **Instant revocation**: Broker deletes the share key → access gone immediately
-- **No plaintext exposure**: Broker stores only ciphertext — even a compromised broker can't read data
+- **No plaintext on broker**: Broker stores only ciphertext — never sees raw data
 
-### ZK-Style Destruction Receipts
+### Limitations (PoC)
 
-When a share is revoked, the broker generates a cryptographic receipt:
+> **Important**: In this PoC, the broker holds the actual decryption key (`share_key == enc_key`). A compromised broker could decrypt any payload it stores. True Proxy Re-Encryption (Umbral) — where the broker holds only re-encryption keys and *cannot* decrypt — is on the [roadmap](#whats-next).
+
+- **Broker holds decryption-equivalent key**: The share key stored on the broker is the encryption key itself. This is the simulated PRE tradeoff — revocation works, but broker blindness requires true PRE.
+- **All shares use the same key**: Share isolation is enforced by the broker (access control), not by cryptographic key separation. Revoking share A doesn't change the key for share B — they are the same bytes.
+- **Cached keys survive revocation**: If a receiver copies the share key before revocation, they retain the ability to decrypt. Revocation only prevents future broker-mediated access.
+- **Destruction receipts are broker assertions**: The HMAC receipt proves the broker *claims* it destroyed the key. It does not independently prove destruction occurred. Production would anchor receipts to an external append-only ledger.
+
+### Destruction Receipts
+
+When a share is revoked, the broker generates a cryptographic receipt (HMAC-signed, not a ZK proof):
 
 ```json
 {
