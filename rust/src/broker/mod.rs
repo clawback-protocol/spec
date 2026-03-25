@@ -1,10 +1,13 @@
 // Clawback Protocol — Broker Module
 //
-// The Broker is a zero-knowledge intermediary:
+// The Broker is a semi-trusted intermediary:
 // - Stores encrypted payloads (never sees plaintext)
-// - Manages per-share keys
+// - Manages per-share keys (PoC: share_key == enc_key, broker CAN decrypt)
 // - Enforces revocation instantly
-// - Logs destruction receipts (append-only)
+// - Logs HMAC-signed destruction receipts (append-only)
+//
+// NOTE: In true PRE (Umbral), the broker would hold only re-encryption keys
+// and could NOT decrypt. This PoC simulates revocation, not broker blindness.
 //
 // TODO: Implement HTTP service using axum
 

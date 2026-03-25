@@ -392,8 +392,8 @@
   <div class="props-grid">
     <div class="prop-card">
       <div class="prop-icon">🔐</div>
-      <div class="prop-title">Zero-Knowledge Broker</div>
-      <div class="prop-desc">The broker stores encrypted payloads and never sees plaintext. Your data stays yours.</div>
+      <div class="prop-title">Semi-Trusted Broker</div>
+      <div class="prop-desc">The broker stores encrypted payloads and never sees plaintext. With true PRE (roadmap), the broker cannot decrypt at all.</div>
     </div>
     <div class="prop-card">
       <div class="prop-icon">⚡</div>
@@ -402,13 +402,13 @@
     </div>
     <div class="prop-card">
       <div class="prop-icon">📋</div>
-      <div class="prop-title">Provable Destruction</div>
-      <div class="prop-desc">Tamper-evident destruction receipts prove deletion cryptographically. Not "trust us" — math.</div>
+      <div class="prop-title">Auditable Destruction</div>
+      <div class="prop-desc">HMAC-signed destruction receipts create an auditable record of key deletion. Production: anchored to an external ledger.</div>
     </div>
     <div class="prop-card">
       <div class="prop-icon">🔑</div>
-      <div class="prop-title">Per-Share Keys</div>
-      <div class="prop-desc">Each recipient gets a unique derived key. Revoke one share without affecting others.</div>
+      <div class="prop-title">Selective Revocation</div>
+      <div class="prop-desc">Revoke individual shares without affecting others. With true PRE (roadmap), each share uses a cryptographically distinct key.</div>
     </div>
     <div class="prop-card">
       <div class="prop-icon">⏱️</div>
@@ -430,7 +430,7 @@
   <div class="flow">
     <div><span class="step">Sender</span> encrypts data locally → registers with Broker</div>
     <div class="arrow">  ↓</div>
-    <div><span class="step">Broker</span> holds ciphertext + per-share key (never sees plaintext)</div>
+    <div><span class="step">Broker</span> holds ciphertext + share key (never sees plaintext; true PRE prevents decryption)</div>
     <div class="arrow">  ↓</div>
     <div><span class="step">Receiver</span> presents share token → gets encrypted blob + share key</div>
     <div class="arrow">  ↓</div>

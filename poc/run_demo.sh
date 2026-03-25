@@ -146,7 +146,7 @@ fi
 banner "Step 5: Destruction Receipt"
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Fetching ZK-style destruction receipt from broker..."
+step "Fetching destruction receipt from broker..."
 RECEIPT_RESP=$(curl -sf http://localhost:8000/receipts/$PAYLOAD_ID)
 echo "$RECEIPT_RESP" | python3 -m json.tool
 

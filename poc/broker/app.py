@@ -1,11 +1,14 @@
 """
 Clawback Protocol — Broker Service (port 8000)
 
-The broker is a blind intermediary:
+The broker is a semi-trusted intermediary:
   - Stores encrypted payloads (never sees plaintext)
-  - Holds per-share derived keys (only for re-encryption simulation)
+  - Holds share keys (PoC: share_key == enc_key, so broker CAN decrypt)
   - Enforces revocation instantly — destroyed keys = destroyed access
-  - Appends ZK-style destruction receipts to receipts.jsonl
+  - Appends HMAC-signed destruction receipts to receipts.jsonl
+
+Note: In true PRE (Umbral), the broker would hold only re-encryption keys
+and could NOT decrypt. This PoC simulates the revocation model, not broker blindness.
 """
 
 import os

@@ -1,7 +1,8 @@
 // Clawback Protocol — Broker HTTP Service (port 8000)
 //
-// Zero-knowledge intermediary: stores encrypted payloads, manages share keys,
-// enforces revocation, logs destruction receipts. Never sees plaintext.
+// Semi-trusted intermediary: stores encrypted payloads, manages share keys,
+// enforces revocation, logs destruction receipts. Never sees plaintext,
+// but holds decryption keys in this PoC (true PRE would fix this).
 
 use axum::{
     extract::{Path, Query, State},

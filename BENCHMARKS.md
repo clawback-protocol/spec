@@ -1,66 +1,51 @@
-# Clawback Protocol — Benchmark Results
-_Generated: 2026-03-17 | Rust release build | Desktop: Ryzen 5800X + RTX 3080_
+# Clawback Protocol — Benchmark Results (Simulated PRE)
+_Architecture: Simulated PRE (share_key = enc_key) | Rust implementation_
 
 ## Summary
-All 20 tests pass (4 unit + 16 stress) in **3.85 seconds** (release mode).
-True Umbral PRE implemented. Zero share leaks. All correctness invariants confirmed.
+Stress tests exercise the simulated PRE protocol: key generation, encryption/decryption,
+broker operations, full lifecycle, revocation correctness, and edge cases.
 
-## Architecture: Before vs After
+> **Note**: These benchmarks reflect the **simulated PRE** model where the broker holds
+> the actual decryption key. Performance characteristics will change when true Proxy
+> Re-Encryption (Umbral) is implemented, as re-encryption adds per-fetch computation.
 
-| Component | Before (Simulated PRE) | After (True Umbral PRE) |
-|-----------|----------------------|------------------------|
-| Key model | Random master key + HKDF | Sender/receiver EC key pairs (secp256k1) |
+## Architecture
+
+| Component | Current (Simulated PRE) | Planned (True Umbral PRE) |
+|-----------|------------------------|--------------------------|
+| Key model | Random master key + HKDF | Sender/receiver EC key pairs |
 | Encryption | ChaCha20-Poly1305 direct | Umbral encrypt() (KEM + DEM) |
 | Sharing | share_key == enc_key for all | Per-receiver kfrags via generate_kfrags() |
-| Broker role | Key locker (holds share_key) | PRE proxy (re-encrypts capsule → cfrags) |
+| Broker role | Key locker (holds share_key = enc_key) | PRE proxy (re-encrypts capsule → cfrags) |
 | Receiver | Stateless (uses share_key) | Holds own key pair, decrypts with cfrags |
 | Revocation | Delete share_key | Destroy kfrags (no more re-encryption) |
-| Broker sees plaintext? | No (but held decryption key) | **No, and cannot (zero-knowledge proxy)** |
-| Wrong receiver? | Could decrypt (same key) | **Cannot decrypt (cfrags are receiver-specific)** |
+| Broker can decrypt? | **Yes** (holds enc_key) | **No** (holds only re-encryption keys) |
+| Share key isolation? | **No** (all shares = same key) | **Yes** (cfrags are receiver-specific) |
 
-## Unit Tests (4/4)
-- ✅ test_pre_encrypt_decrypt_original — sender decrypts own data
-- ✅ test_pre_full_roundtrip — full PRE: encrypt → kfrags → reencrypt → decrypt
-- ✅ test_pre_multiple_receivers — same ciphertext, different receivers
-- ✅ test_destruction_proof — HMAC-SHA256 receipt integrity
+## Stress Tests
 
-## Stress Tests (16/16)
+| Test | Description |
+|------|-------------|
+| Key generation | MasterKey::generate() + HKDF derivation throughput |
+| Encrypt/decrypt | ChaCha20-Poly1305 at 64B, 1KB, 64KB payload sizes |
+| Blob roundtrip | Nonce+ciphertext serialization/deserialization |
+| Destruction proofs | HMAC-SHA256 generation + SHA-256 hashing |
+| Broker register + fetch | In-memory store and retrieval |
+| Broker revoke + receipt | Key destruction + receipt generation |
+| Multi-share (50x50) | 50 payloads x 50 shares, selective revocation |
+| Full lifecycle (1K) | Encrypt → register → fetch → decrypt → revoke → denied |
+| Receipt integrity | HMAC determinism + field correctness |
+| Double revoke | Idempotent revocation behavior |
+| Nonexistent lookups | Bogus payload/share rejection |
+| Selective revocation | Revoke share A, verify share B unaffected |
+| Wrong key rejection | Different sender's key cannot decrypt |
 
-| Test | Result |
-|------|--------|
-| Crypto key generation | 5K keys, 13K PublicKey/s |
-| Encrypt/decrypt throughput | 64B→64KB, 1.4K–5K ops/s |
-| KFrag generation (1-of-1) | 1K ops, 1,355 ops/s |
-| KFrag generation (3-of-5) | 1K ops, 675 ops/s |
-| Re-encryption throughput | 2K ops, 2,392 ops/s |
-| Broker register (PRE) | 2K ops, 921 ops/s |
-| Broker fetch (re-encryption) | 2K ops, 4,064 ops/s |
-| Broker revoke + receipt | 2K ops, **722K ops/s** |
-| Multi-share (50×50) | 2,500 shares, isolation verified |
-| Full lifecycle (1K payloads) | All phases passed |
-| Receipt integrity | 1K receipts, determinism verified |
-| Double revoke | Idempotent, all REVOKED |
-| Nonexistent lookups | 10K rejected, 3.9M ops/s |
-| PRE: delegate → reencrypt → revoke → lockout | 500 cycles passed |
-| PRE: wrong receiver cannot decrypt | 200 attempts correctly rejected |
-| PRE: selective revocation | 200 tests: A revoked, B unaffected |
-| PRE: threshold (3-of-5) | 200 tests: any 3-of-5 kfrags suffice |
+## Key Limitations to Note
 
-## Key Numbers for Grant/Partner Presentations
-- **722,000 revocations/second** — instant, cryptographic, at scale
-- **Zero broker plaintext access** — true zero-knowledge proxy
-- **Wrong receiver correctly rejected** — cfrags are receiver-specific
-- **Threshold sharing (3-of-5)** — enterprise-grade key management
-- **500 full delegate→revoke→lockout cycles** — protocol integrity verified
-- **10K bogus lookups rejected at 3.9M ops/s**
-
-## Cryptographic Foundation
-- Umbral PRE (arXiv:1707.06140) — Nucypher/Threshold Network
-- secp256k1 elliptic curve key pairs
-- KEM + DEM hybrid encryption
-- HMAC-SHA256 destruction receipts
-- Threshold kfrag splitting (m-of-n)
+- **Broker holds decryption key**: The simulated PRE model stores enc_key on the broker. Benchmark numbers for "broker fetch" do not include the re-encryption computation that true PRE would require.
+- **No per-share key isolation**: All shares use identical key bytes. The "selective revocation" test verifies broker access-control isolation, not cryptographic key isolation.
+- **Destruction receipts are broker assertions**: HMAC receipts prove the broker claims destruction, not that destruction independently occurred.
 
 ## Test Files
-- `rust/tests/stress_test.rs`
-- `rust/src/pre.rs` (Umbral PRE implementation)
+- `rust/tests/stress_test.rs` — stress and throughput tests
+- `rust/tests/verify_test.rs` — destruction receipt verifier tests

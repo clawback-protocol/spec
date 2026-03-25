@@ -52,13 +52,15 @@ In this PoC, we simulate PRE using **X25519 key exchange + HKDF + ChaCha20-Poly1
 ```
 master_key  (32 bytes, random)
 │
-├── enc_key = HKDF(master_key, info="payload-encryption")
-│     └── used to encrypt/decrypt the actual payload
-│
-└── share_key_N = HKDF(master_key, info=share_id_N)
-      └── unique per recipient share
-          stored on broker, returned on fetch
-          DESTROYED on revocation
+└── enc_key = HKDF(master_key, info="payload-encryption")
+      ├── used to encrypt/decrypt the actual payload
+      └── share_key = enc_key  (PoC: all shares get the same key)
+            stored on broker, returned on fetch
+            DESTROYED on revocation
+
+NOTE (PoC): share_key == enc_key for all recipients. Share isolation
+is enforced by broker access control, not by distinct keys.
+In true PRE (Umbral), each share would get a unique re-encryption key.
 ```
 
 ### Encryption (Sender)
@@ -76,10 +78,11 @@ ciphertext = ChaCha20Poly1305(enc_key).encrypt(nonce, plaintext, aad=None)
 blob = nonce + ciphertext  # prepend nonce for storage
 
 # 4. Derive share key for recipient
-share_key = HKDF(master_key, info=share_id.encode(), length=32)
+share_key = enc_key  # PoC: share_key IS enc_key (same bytes for all shares)
 
 # 5. Register with broker: (blob_b64, share_key_b64)
-# Note: broker NEVER sees master_key or enc_key
+# Note: broker NEVER sees master_key or plaintext
+# PoC caveat: broker DOES hold enc_key (as share_key) and could decrypt
 ```
 
 ### Decryption (Receiver)
@@ -88,13 +91,10 @@ share_key = HKDF(master_key, info=share_id.encode(), length=32)
 # Receiver gets: encrypted_blob (b64) + share_key (b64) from broker
 
 # share_key IS the encryption key (enc_key derived from master_key)
-# This works because: share_key = HKDF(master_key, info=share_id)
-#                  and enc_key  = HKDF(master_key, info="payload-encryption")
-# Wait — these are different keys. So how does decryption work?
-# Answer: The share_key stored on the broker IS the enc_key.
-# The HKDF "share key derivation" provides per-share namespacing —
-# in production PRE, this would be a re-encryption key that transforms
-# ciphertext without revealing enc_key.
+# In this PoC, share_key IS enc_key (same bytes).
+# The broker stores enc_key directly as the share key.
+# In production PRE (Umbral), the broker would hold a re-encryption key
+# that transforms ciphertext without being able to decrypt.
 
 nonce, ct = blob[:12], blob[12:]
 plaintext = ChaCha20Poly1305(share_key).decrypt(nonce, ct, None)
@@ -138,7 +138,7 @@ After revocation:
 - The encrypted blob still exists (immutable audit trail)
 - The share key is gone — decryption is mathematically impossible
 
-### ZK-Style Destruction Receipt
+### Destruction Receipt
 
 ```json
 {
@@ -153,7 +153,7 @@ After revocation:
 
 **destruction_proof** = `HMAC-SHA256(broker_secret, payload_id + revoked_at)`
 
-This is "ZK-style" in the sense that it's a cryptographic commitment: the broker proves it performed the destruction at a specific time, without revealing the broker secret. In production, this would be an actual zero-knowledge proof or a blockchain-anchored commitment.
+This is an HMAC-signed assertion: the broker commits to having destroyed the key at a specific time, without revealing the broker secret. This is **not** a zero-knowledge proof — it is a signed claim by the broker. The broker can fabricate receipts for keys it did not actually destroy. In production, receipts should be anchored to an external append-only ledger (e.g., Certificate Transparency-style log or blockchain) for independent verification.
 
 Receipts are stored in `broker/receipts.jsonl` (append-only).
 
@@ -192,13 +192,14 @@ t=4  Receiver.receive(payload_id, share_token_2)
 
 | Property | Status | Notes |
 |----------|--------|-------|
-| Broker blindness | ✓ Partial | Broker holds share_key in this PoC; true PRE would fix this |
-| Forward secrecy | ✓ | Each share has a unique key; revoking one doesn't affect others |
+| Broker blindness | ✗ PoC | Broker holds enc_key (can decrypt). True PRE (Umbral) required for blindness. |
+| Share key isolation | ✗ PoC | All shares use same enc_key bytes. Isolation is broker-enforced, not cryptographic. |
 | Instant revocation | ✓ | Key deletion is immediate; no caching |
 | Master key isolation | ✓ | master_key never transmitted |
-| Tamper-evident audit | ✓ | HMAC-signed receipts; append-only log |
+| Tamper-evident audit | ✓ Partial | HMAC-signed receipts; append-only log. Broker self-asserts, not independently verifiable. |
 | Replay prevention | ✗ | Not implemented in PoC |
 | Share token forgery | ✗ | UUIDs; production needs signed JWTs |
+| Cached key resistance | ✗ | Receiver who cached share_key retains access after revocation |
 
 ---
 

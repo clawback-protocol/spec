@@ -4,14 +4,14 @@ Clawback Protocol — Sender Service (port 8001)
 The sender owns the data. They:
   - Generate an X25519 keypair (master key, never leaves this service)
   - Encrypt data locally with ChaCha20-Poly1305
-  - Derive per-share keys via HKDF(master_key, share_id)
   - Register encrypted blobs + share keys with the broker
+    (PoC: share_key = enc_key for all shares; true PRE would derive per-recipient)
   - Can revoke any share at any time (tell broker to destroy share key)
 
 Crypto flow (simulated PRE):
   plaintext
     → encrypt with master_key → ciphertext
-    → for each share: derive share_key = HKDF(master_key, share_id)
+    → for each share: share_key = enc_key (simulated PRE; same key)
     → send (ciphertext, share_key) to broker
     → receiver decrypts ciphertext using share_key
     → master_key NEVER leaves sender
