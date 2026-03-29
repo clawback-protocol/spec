@@ -1,4 +1,4 @@
-// Clawback Protocol — Receiver HTTP Service (port 8002)
+// Clawback Protocol — Receiver HTTP Service (port 8012)
 //
 // The receiver:
 // - Presents share_token to broker via HTTP
@@ -184,10 +184,10 @@ async fn main() {
     let port: u16 = std::env::var("RECEIVER_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8002);
+        .unwrap_or(8012);
 
     let broker_url =
-        std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8010".to_string());
 
     let receiver_state = Arc::new(ReceiverState {
         broker_url,

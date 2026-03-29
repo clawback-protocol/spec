@@ -38,9 +38,9 @@ clawback-protocol/spec/
 │       └── whitepaper-v0.1.md
 │
 ├── poc/                   ← Python proof-of-concept (WORKING, do not break)
-│   ├── broker/app.py     ← Broker service (port 8000)
-│   ├── sender/app.py     ← Sender service (port 8001)
-│   ├── receiver/app.py   ← Receiver service (port 8002)
+│   ├── broker/app.py     ← Broker service (port 8010)
+│   ├── sender/app.py     ← Sender service (port 8011)
+│   ├── receiver/app.py   ← Receiver service (port 8012)
 │   ├── run_demo.sh       ← Full lifecycle demo script
 │   └── requirements.txt
 │

@@ -1,5 +1,5 @@
 """
-Clawback Protocol — Receiver Service (port 5002)
+Clawback Protocol — Receiver Service (port 8012)
 
 The receiver:
   - Has a share token (share_id) from the sender
@@ -23,7 +23,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-BROKER_URL = os.environ.get("BROKER_URL", "http://localhost:8000")
+BROKER_URL = os.environ.get("BROKER_URL", "http://localhost:8010")
 
 
 def _decrypt(blob: bytes, key: bytes) -> bytes:
@@ -86,4 +86,4 @@ def receive():
 
 
 if __name__ == "__main__":
-    app.run(port=8002, debug=False)
+    app.run(port=8012, debug=False)

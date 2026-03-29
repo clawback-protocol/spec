@@ -1,4 +1,4 @@
-// Clawback Protocol — Sender HTTP Service (port 8001)
+// Clawback Protocol — Sender HTTP Service (port 8011)
 //
 // The sender owns the data:
 // - Generates master_key (NEVER transmitted)
@@ -298,10 +298,10 @@ async fn main() {
     let port: u16 = std::env::var("SENDER_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8001);
+        .unwrap_or(8011);
 
     let broker_url =
-        std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8010".to_string());
 
     let sender_state = Arc::new(Mutex::new(SenderState {
         sender: Sender::new(),

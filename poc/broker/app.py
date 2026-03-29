@@ -1,5 +1,5 @@
 """
-Clawback Protocol — Broker Service (port 5000)
+Clawback Protocol — Broker Service (port 8010)
 
 The broker is a blind intermediary:
   - Stores encrypted payloads (never sees plaintext)
@@ -30,12 +30,32 @@ def _destruction_proof(payload_id: str, revoked_at: str) -> str:
     return hmac.new(BROKER_SECRET.encode(), msg, hashlib.sha256).hexdigest()
 
 
+def _attestation_doc(payload_id: str, revoked_at: str, destruction_proof: str) -> dict:
+    """
+    Simulated TEE attestation document.
+    In production this would be a signed AWS Nitro Enclave attestation.
+    """
+    return {
+        "provider": "simulated",
+        "code_hash": hashlib.sha256(open(__file__, 'rb').read()).hexdigest(),
+        "enclave_id": os.environ.get("ENCLAVE_ID", "local-dev"),
+        "attested_at": revoked_at,
+        "pcr0": "simulated-not-real-tee",
+        "note": "Simulated attestation. In production: AWS Nitro Enclave signed document."
+    }
+
+
 def _append_receipt(receipt: dict):
     with open(RECEIPTS_FILE, "a") as f:
         f.write(json.dumps(receipt) + "\n")
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check endpoint."""
+    return jsonify({"status": "ok"}), 200
 
 @app.route("/register", methods=["POST"])
 def register():
@@ -44,6 +64,12 @@ def register():
     Body: { payload_id, encrypted_blob (b64), share_id, share_key (b64) }
     """
     data = request.json
+    if not data:
+        return jsonify({"error": "request body required"}), 400
+    for field in ("payload_id", "encrypted_blob", "share_id", "share_key"):
+        if field not in data:
+            return jsonify({"error": f"missing required field: {field}"}), 400
+
     pid = data["payload_id"]
     blob = data["encrypted_blob"]   # base64-encoded ciphertext
     share_id = data["share_id"]
@@ -69,6 +95,12 @@ def add_share():
     Body: { payload_id, share_id, share_key (b64) }
     """
     data = request.json
+    if not data:
+        return jsonify({"error": "request body required"}), 400
+    for field in ("payload_id", "share_id", "share_key"):
+        if field not in data:
+            return jsonify({"error": f"missing required field: {field}"}), 400
+
     pid = data["payload_id"]
     share_id = data["share_id"]
     share_key = data["share_key"]
@@ -134,12 +166,15 @@ def revoke(payload_id):
     # DESTROY the share key — access is gone instantly
     del entry["shares"][share_id]
 
+    attestation = _attestation_doc(payload_id, revoked_at, proof)
+
     receipt = {
         "payload_id": payload_id,
         "share_id": share_id,
         "data_hash": data_hash,
         "revoked_at": revoked_at,
         "destruction_proof": proof,
+        "attestation": attestation,
         "status": "DESTROYED"
     }
     _append_receipt(receipt)
@@ -168,5 +203,22 @@ def receipts(payload_id):
     return jsonify({"payload_id": payload_id, "receipts": results}), 200
 
 
+@app.route("/attestation", methods=["GET"])
+def attestation():
+    """
+    Returns the broker's current simulated attestation document.
+    Equivalent to PCC's transparency log entry.
+    """
+    doc = {
+        "provider": "simulated",
+        "code_hash": hashlib.sha256(open(__file__, 'rb').read()).hexdigest(),
+        "enclave_id": os.environ.get("ENCLAVE_ID", "local-dev"),
+        "attested_at": datetime.now(timezone.utc).isoformat(),
+        "pcr0": "simulated-not-real-tee",
+        "note": "Simulated attestation. In production: AWS Nitro Enclave signed document."
+    }
+    return jsonify(doc), 200
+
+
 if __name__ == "__main__":
-    app.run(port=8000, debug=False)
+    app.run(port=8010, debug=False)

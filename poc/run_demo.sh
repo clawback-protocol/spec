@@ -46,19 +46,19 @@ trap cleanup EXIT
 # ── Start services ───────────────────────────────────────────────────────────
 banner "Clawback Protocol — Proxy Re-Encryption Demo"
 
-step "Starting Broker (port 8000)..."
+step "Starting Broker (port 8010)..."
 cd "$ROOT/broker"
 python3 app.py > /tmp/clawback-broker.log 2>&1 &
 BROKER_PID=$!
 sleep 1
 
-step "Starting Sender (port 8001)..."
+step "Starting Sender (port 8011)..."
 cd "$ROOT/sender"
 python3 app.py > /tmp/clawback-sender.log 2>&1 &
 SENDER_PID=$!
 sleep 1
 
-step "Starting Receiver (port 8002)..."
+step "Starting Receiver (port 8012)..."
 cd "$ROOT/receiver"
 python3 app.py > /tmp/clawback-receiver.log 2>&1 &
 RECEIVER_PID=$!
@@ -67,11 +67,11 @@ sleep 1
 # Quick health check — retry while services warm up
 step "Waiting for services to be ready..."
 RETRIES=12
-until curl -sf http://localhost:8000/receipts/health > /dev/null 2>&1 || [ "$RETRIES" -eq 0 ]; do
+until curl -sf http://localhost:8010/health > /dev/null 2>&1 || [ "$RETRIES" -eq 0 ]; do
   sleep 1
   RETRIES=$((RETRIES - 1))
 done
-if ! curl -sf http://localhost:8000/receipts/health > /dev/null 2>&1; then
+if ! curl -sf http://localhost:8010/health > /dev/null 2>&1; then
   fail "Broker not responding after 12s. Check /tmp/clawback-broker.log"
   cat /tmp/clawback-broker.log
   exit 1
@@ -83,7 +83,7 @@ banner "Step 1: Sender encrypts sensitive data"
 # ─────────────────────────────────────────────────────────────────────────────
 
 step "Encrypting 'This is sensitive data - Reese'..."
-ENCRYPT_RESP=$(curl -sf -X POST http://localhost:8001/encrypt \
+ENCRYPT_RESP=$(curl -sf -X POST http://localhost:8011/encrypt \
   -H 'Content-Type: application/json' \
   -d '{"plaintext": "This is sensitive data - Reese"}')
 
@@ -100,7 +100,7 @@ banner "Step 2: Receiver fetches and decrypts"
 # ─────────────────────────────────────────────────────────────────────────────
 
 step "Receiver requesting access with share token..."
-RECEIVE_RESP=$(curl -sf -X POST http://localhost:8002/receive \
+RECEIVE_RESP=$(curl -sf -X POST http://localhost:8012/receive \
   -H 'Content-Type: application/json' \
   -d "{\"payload_id\": \"$PAYLOAD_ID\", \"share_token\": \"$SHARE_TOKEN\"}")
 
@@ -115,7 +115,7 @@ banner "Step 3: Sender revokes access"
 # ─────────────────────────────────────────────────────────────────────────────
 
 step "Sender revoking share token..."
-REVOKE_RESP=$(curl -sf -X POST http://localhost:8001/revoke/$PAYLOAD_ID \
+REVOKE_RESP=$(curl -sf -X POST http://localhost:8011/revoke/$PAYLOAD_ID \
   -H 'Content-Type: application/json' \
   -d "{\"share_id\": \"$SHARE_TOKEN\"}")
 
@@ -128,7 +128,7 @@ banner "Step 4: Receiver tries again — should be REVOKED"
 
 step "Receiver attempting access after revocation..."
 HTTP_CODE=$(curl -s -o /tmp/revoked_resp.json -w "%{http_code}" \
-  -X POST http://localhost:8002/receive \
+  -X POST http://localhost:8012/receive \
   -H 'Content-Type: application/json' \
   -d "{\"payload_id\": \"$PAYLOAD_ID\", \"share_token\": \"$SHARE_TOKEN\"}")
 
@@ -147,7 +147,7 @@ banner "Step 5: Destruction Receipt"
 # ─────────────────────────────────────────────────────────────────────────────
 
 step "Fetching ZK-style destruction receipt from broker..."
-RECEIPT_RESP=$(curl -sf http://localhost:8000/receipts/$PAYLOAD_ID)
+RECEIPT_RESP=$(curl -sf http://localhost:8010/receipts/$PAYLOAD_ID)
 echo "$RECEIPT_RESP" | python3 -m json.tool
 
 RECEIPT_COUNT=$(echo "$RECEIPT_RESP" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['receipts']))")

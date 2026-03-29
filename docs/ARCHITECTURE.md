@@ -23,7 +23,7 @@ In this PoC, we simulate PRE using **X25519 key exchange + HKDF + ChaCha20-Poly1
 │                                                                       │
 │   ┌───────────────┐                        ┌───────────────────┐    │
 │   │    SENDER     │                        │      BROKER       │    │
-│   │   port 8001   │                        │    port 8000      │    │
+│   │   port 8011   │                        │    port 8010      │    │
 │   │               │──── register ─────────►│                   │    │
 │   │  master_key   │     (blob + share_key) │  ┌─────────────┐  │    │
 │   │  (never       │                        │  │  encrypted  │  │    │
@@ -35,7 +35,7 @@ In this PoC, we simulate PRE using **X25519 key exchange + HKDF + ChaCha20-Poly1
 │           ▼                                │  └─────────────┘  │    │
 │   ┌───────────────┐   fetch (share_id)     └─────────┬─────────┘    │
 │   │   RECEIVER    │──────────────────────────────────►              │
-│   │   port 8002   │◄─────── blob + share_key ────────┘             │
+│   │   port 8012   │◄─────── blob + share_key ────────┘             │
 │   │               │                                                  │
 │   │  decrypt      │                                                  │
 │   │  locally      │                                                  │
@@ -257,12 +257,12 @@ t=4  Receiver.receive(payload_id, share_token_2)
 ```
 clawback-poc/
 ├── broker/
-│   ├── app.py          # Broker service (port 8000)
+│   ├── app.py          # Broker service (port 8010)
 │   └── receipts.jsonl  # Append-only destruction log (created on first revoke)
 ├── sender/
-│   └── app.py          # Sender service (port 8001)
+│   └── app.py          # Sender service (port 8011)
 ├── receiver/
-│   └── app.py          # Receiver service (port 8002)
+│   └── app.py          # Receiver service (port 8012)
 ├── docs/
 │   └── ARCHITECTURE.md # This file
 ├── run_demo.sh         # Full demo script

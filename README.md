@@ -23,14 +23,14 @@ There's no "please delete this" request. No trust required. When you revoke, the
  │                                                       │
  │   ┌─────────┐   (1) register blob+share_key          │
  │   │  Sender │──────────────────────────────►         │
- │   │ :8001   │   (5) revoke → destroy share_key       │
+ │   │ :8011   │   (5) revoke → destroy share_key       │
  │   └─────────┘──────────────────────────────►         │
  │        │                              ┌────────────┐  │
  │        │ (2) share_token              │   Broker   │  │
- │        ▼                              │   :8000    │  │
+ │        ▼                              │   :8010    │  │
  │   ┌──────────┐  (3) fetch blob +      │            │  │
  │   │ Receiver │──── share_key ────────►│            │  │
- │   │  :8002   │◄─── encrypted blob ───│            │  │
+ │   │  :8012   │◄─── encrypted blob ───│            │  │
  │   │          │     + share_key        └────────────┘  │
  │   └──────────┘                             │           │
  │        │  (4) decrypt locally              │ (6) log   │
@@ -43,9 +43,9 @@ There's no "please delete this" request. No trust required. When you revoke, the
 
 | Service | Port | Role |
 |---------|------|------|
-| **Broker** | 5000 | Blind intermediary. Stores encrypted blobs + share keys. Never sees plaintext. |
-| **Sender** | 5001 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
-| **Receiver** | 5002 | Fetches blob + share key from broker. Decrypts locally. |
+| **Broker** | 8010 | Blind intermediary. Stores encrypted blobs + share keys. Never sees plaintext. |
+| **Sender** | 8011 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
+| **Receiver** | 8012 | Fetches blob + share key from broker. Decrypts locally. |
 
 ---
 
@@ -136,7 +136,7 @@ python3 receiver/app.py
 
 ## API Reference
 
-### Broker (port 8000)
+### Broker (port 8010)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -146,7 +146,7 @@ python3 receiver/app.py
 | `POST` | `/revoke/{payload_id}` | Destroy a share key, log receipt |
 | `GET`  | `/receipts/{payload_id}` | Get all destruction receipts |
 
-### Sender (port 8001)
+### Sender (port 8011)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -154,7 +154,7 @@ python3 receiver/app.py
 | `POST` | `/share/{payload_id}` | Issue a new share token |
 | `POST` | `/revoke/{payload_id}` | Revoke a share (destroys key on broker) |
 
-### Receiver (port 8002)
+### Receiver (port 8012)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -166,27 +166,27 @@ python3 receiver/app.py
 
 ```bash
 # 1. Encrypt
-curl -X POST http://localhost:8001/encrypt \
+curl -X POST http://localhost:8011/encrypt \
   -H 'Content-Type: application/json' \
   -d '{"plaintext": "hello clawback"}'
 
 # 2. Receive (use payload_id and share_token from above)
-curl -X POST http://localhost:8002/receive \
+curl -X POST http://localhost:8012/receive \
   -H 'Content-Type: application/json' \
   -d '{"payload_id": "...", "share_token": "..."}'
 
 # 3. Revoke
-curl -X POST http://localhost:8001/revoke/{payload_id} \
+curl -X POST http://localhost:8011/revoke/{payload_id} \
   -H 'Content-Type: application/json' \
   -d '{"share_id": "..."}'
 
 # 4. Try to receive again (expect 403)
-curl -X POST http://localhost:8002/receive \
+curl -X POST http://localhost:8012/receive \
   -H 'Content-Type: application/json' \
   -d '{"payload_id": "...", "share_token": "..."}'
 
 # 5. Get destruction receipt
-curl http://localhost:8000/receipts/{payload_id}
+curl http://localhost:8010/receipts/{payload_id}
 ```
 
 ---

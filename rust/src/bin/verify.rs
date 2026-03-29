@@ -6,7 +6,7 @@
 // Usage:
 //   clawback-verify receipt.json --secret <broker-secret>
 //   cat receipt.json | clawback-verify - --secret <broker-secret>
-//   clawback-verify receipt.json --secret <broker-secret> --broker-url http://localhost:8000
+//   clawback-verify receipt.json --secret <broker-secret> --broker-url http://localhost:8010
 //   clawback-verify receipt.json --secret <broker-secret> --json
 
 use std::process;

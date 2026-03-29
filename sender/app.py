@@ -1,5 +1,5 @@
 """
-Clawback Protocol — Sender Service (port 5001)
+Clawback Protocol — Sender Service (port 8011)
 
 The sender owns the data. They:
   - Generate an X25519 keypair (master key, never leaves this service)
@@ -33,7 +33,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-BROKER_URL = os.environ.get("BROKER_URL", "http://localhost:8000")
+BROKER_URL = os.environ.get("BROKER_URL", "http://localhost:8010")
 
 # ─── In-memory state ─────────────────────────────────────────────────────────
 # payload_id → { master_key_bytes, shares: { share_id: True } }
@@ -206,4 +206,4 @@ def revoke(payload_id):
 
 
 if __name__ == "__main__":
-    app.run(port=8001, debug=False)
+    app.run(port=8011, debug=False)
