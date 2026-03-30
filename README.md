@@ -1,97 +1,111 @@
 # Clawback Protocol — Proof of Concept
 
 > **"You shared it. You can unshare it."**
-> 
-> A working demonstration of cryptographic data revocation using Proxy Re-Encryption (PRE) principles.
+>
+> Cryptographic data revocation using Umbral Proxy Re-Encryption with provable destruction.
 
 ---
 
 ## What This Is
 
-This PoC demonstrates the core cryptographic primitive behind the Clawback Protocol:  
+This PoC demonstrates the core cryptographic primitive behind the Clawback Protocol:
 **data access can be revoked at any time, by design, not by policy.**
 
-There's no "please delete this" request. No trust required. When you revoke, the key is destroyed on the broker and the data becomes mathematically inaccessible.
+There's no "please delete this" request. No trust required. When you revoke, the broker's re-encryption key fragments (kfrags) are destroyed and the data becomes mathematically inaccessible — even to the broker itself.
 
 ---
 
 ## Architecture
 
 ```
- ┌──────────────────────────────────────────────────────┐
- │                  Clawback Protocol                    │
- │                                                       │
- │   ┌─────────┐   (1) register blob+share_key          │
- │   │  Sender │──────────────────────────────►         │
- │   │ :8011   │   (5) revoke → destroy share_key       │
- │   └─────────┘──────────────────────────────►         │
- │        │                              ┌────────────┐  │
- │        │ (2) share_token              │   Broker   │  │
- │        ▼                              │   :8010    │  │
- │   ┌──────────┐  (3) fetch blob +      │            │  │
- │   │ Receiver │──── share_key ────────►│            │  │
- │   │  :8012   │◄─── encrypted blob ───│            │  │
- │   │          │     + share_key        └────────────┘  │
- │   └──────────┘                             │           │
- │        │  (4) decrypt locally              │ (6) log   │
- │        ▼                                   ▼           │
- │   plaintext                        receipts.jsonl      │
- └──────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────┐
+ │                    Clawback Protocol (Umbral PRE)           │
+ │                                                             │
+ │   ┌─────────┐   (1) register blob + capsule + kfrags       │
+ │   │  Sender │──────────────────────────────────►           │
+ │   │ :8011   │   (6) revoke → destroy kfrags                │
+ │   └─────────┘──────────────────────────────────►           │
+ │        │                                ┌────────────┐      │
+ │        │ (2) share_token                │   Broker   │      │
+ │        ▼                                │   :8010    │      │
+ │   ┌──────────┐  (4) fetch + re-encrypt  │ (ZK proxy) │      │
+ │   │ Receiver │──── share_id ──────────►│            │      │
+ │   │  :8012   │◄─── blob + cfrags ─────│            │      │
+ │   │          │                          └────────────┘      │
+ │   └──────────┘                               │              │
+ │        │  (5) Umbral decrypt                 │ (7) receipt  │
+ │        │      (receiver's own key)           │ + attestation│
+ │        ▼                                     ▼              │
+ │   plaintext                          receipts.jsonl         │
+ └────────────────────────────────────────────────────────────┘
+ (3) Receiver publishes public key via GET /public_key
 ```
 
 ### Three Services
 
 | Service | Port | Role |
 |---------|------|------|
-| **Broker** | 8010 | Blind intermediary. Stores encrypted blobs + share keys. Never sees plaintext. |
-| **Sender** | 8011 | Owns the data. Encrypts, shares, revokes. Master key never leaves. |
-| **Receiver** | 8012 | Fetches blob + share key from broker. Decrypts locally. |
+| **Broker** | 8010 | Zero-knowledge proxy. Re-encrypts capsule fragments. Never holds encryption keys. |
+| **Sender** | 8011 | Owns the data. Encrypts, generates kfrags per receiver, revokes. |
+| **Receiver** | 8012 | Has own Umbral keypair. Decrypts via re-encrypted capsule fragments. |
 
 ---
 
 ## Crypto Stack
 
-All crypto via the `cryptography` Python library.
+### Umbral Proxy Re-Encryption
 
-### Simulated PRE Flow
-
-True Proxy Re-Encryption (like Umbral/NuCypher) re-encrypts ciphertext on the broker so the receiver can decrypt with their own key. We simulate the key concept cleanly:
+The protocol uses [Umbral PRE](https://github.com/nucypher/rust-umbral) (arXiv:1707.06140) — a threshold proxy re-encryption scheme where the broker can transform ciphertext from sender to receiver **without ever being able to decrypt it**.
 
 ```
-master_key = random 32 bytes              (Sender only, never shared)
-enc_key    = HKDF(master_key, info="payload-encryption")
-ciphertext = ChaCha20Poly1305.encrypt(plaintext, enc_key)
+Sender:
+  data_key    = random 32 bytes
+  ciphertext  = ChaCha20-Poly1305(plaintext, data_key)
+  capsule, ct = umbral.encrypt(sender_pk, data_key)
+  kfrags      = generate_kfrags(sender_sk, receiver_pk, ...)
 
-share_key  = HKDF(master_key, info=share_id)   ← unique per recipient
+Broker (zero-knowledge):
+  stores: ciphertext, capsule, kfrags
+  on fetch: cfrag = reencrypt(capsule, kfrag)  ← cannot decrypt!
+  returns: ciphertext, capsule, cfrags
+
+Receiver:
+  data_key  = decrypt_reencrypted(receiver_sk, sender_pk, capsule, cfrags, ct)
+  plaintext = ChaCha20-Poly1305.decrypt(ciphertext, data_key)
 ```
 
-The broker stores `(ciphertext, share_key)`. The receiver gets both and decrypts.  
-The sender revokes by telling the broker to delete `share_key`.  
-Without the key, decryption is impossible. The master key never left the sender.
+### Why This Is Stronger Than Key Storage
 
-### Why This Works
+| Property | Old (simulated) | Current (Umbral PRE) |
+|----------|-----------------|---------------------|
+| Broker holds encryption key? | Yes (share_key = enc_key) | **No** (holds kfrags only) |
+| Compromised broker can decrypt? | Yes | **No** (mathematically impossible) |
+| Wrong receiver can decrypt? | Yes (same key) | **No** (cfrags are receiver-specific) |
+| Revocation mechanism | Delete key (policy-based) | Destroy kfrags (mathematical) |
 
-- **Master key isolation**: Sender's master key is never transmitted anywhere
-- **Per-share derivation**: Each recipient gets a unique key derived via HKDF
-- **Instant revocation**: Broker deletes the share key → access gone immediately
-- **No plaintext exposure**: Broker stores only ciphertext — even a compromised broker can't read data
+### Cryptographic Attestation
 
-### ZK-Style Destruction Receipts
-
-When a share is revoked, the broker generates a cryptographic receipt:
+Destruction receipts include signed attestation documents with a SHA-384 code hash (PCR0), compatible with AWS Nitro Enclave attestation format:
 
 ```json
 {
   "payload_id": "uuid",
   "share_id": "uuid",
-  "data_hash": "sha256 of encrypted blob",
-  "revoked_at": "2026-03-05T17:30:00+00:00",
+  "data_hash": "sha256(ciphertext)",
+  "revoked_at": "2026-03-30T04:58:00+00:00",
   "destruction_proof": "HMAC(broker_secret, payload_id + revoked_at)",
+  "attestation": {
+    "provider": "simulated",
+    "pcrs": { "pcr0": "sha384 of broker source" },
+    "signature": "ed25519 signature",
+    "timestamp": "ISO-8601",
+    "module_id": "enclave-id"
+  },
   "status": "DESTROYED"
 }
 ```
 
-This provides a tamper-evident audit trail proving the key was destroyed at a specific time.
+Verify any receipt: `GET /broker/attestation` returns the current code hash. Compare `pcrs.pcr0` against the published release hash.
 
 ---
 
@@ -100,24 +114,29 @@ This provides a tamper-evident audit trail proving the key was destroyed at a sp
 ### Prerequisites
 
 ```bash
-pip install flask cryptography requests
+pip install flask cryptography requests umbral cbor2
 ```
 
-### Run the Full Demo
+### Run the PII Revocation Demo
 
 ```bash
-cd /Users/macminski/clawback-poc
-./run_demo.sh
+cd /path/to/clawback-poc
+python3 demo_pii_signup.py
 ```
 
-This will:
-1. Start all three services
-2. Encrypt "This is sensitive data - Reese"
-3. Share with receiver → decrypt successfully
-4. Revoke the share
-5. Receiver tries again → REVOKED
-6. Print the destruction receipt
-7. Shut everything down
+This runs 6 automated checks:
+1. Encrypt PII payload (Umbral PRE)
+2. Receiver decrypts via re-encrypted capsule fragments
+3. User revokes — kfrags destroyed on broker
+4. Re-access denied (HTTP 403)
+5. Destruction receipt verified
+6. Attestation document signature verified
+
+### Run the Shell Demo
+
+```bash
+./run_demo.sh
+```
 
 ### Run Services Individually
 
@@ -140,74 +159,67 @@ python3 receiver/app.py
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/register` | Register encrypted blob + first share key |
-| `POST` | `/add_share` | Add a new share key for an existing payload |
-| `GET`  | `/fetch/{payload_id}?share_id=X` | Fetch blob + share key (403 if revoked) |
-| `POST` | `/revoke/{payload_id}` | Destroy a share key, log receipt |
+| `GET`  | `/health` | Health check |
+| `GET`  | `/attestation` | Current attestation document (transparency log) |
+| `POST` | `/register` | Register encrypted blob + capsule + kfrags |
+| `POST` | `/add_share` | Add new kfrags for an existing payload |
+| `GET`  | `/fetch/{payload_id}?share_id=X` | Re-encrypt capsule, return cfrags (403 if revoked) |
+| `POST` | `/revoke/{payload_id}` | Destroy kfrags, log receipt with attestation |
 | `GET`  | `/receipts/{payload_id}` | Get all destruction receipts |
 
 ### Sender (port 8011)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/encrypt` | Encrypt plaintext, register with broker |
-| `POST` | `/share/{payload_id}` | Issue a new share token |
-| `POST` | `/revoke/{payload_id}` | Revoke a share (destroys key on broker) |
+| `POST` | `/encrypt` | Encrypt plaintext, generate kfrags, register with broker |
+| `POST` | `/share/{payload_id}` | Issue a new share (new kfrags for new receiver) |
+| `POST` | `/revoke/{payload_id}` | Revoke a share (destroys kfrags on broker) |
 
 ### Receiver (port 8012)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/receive` | Fetch + decrypt with share token |
+| `GET`  | `/public_key` | Receiver's Umbral public key (sender needs this for kfrags) |
+| `POST` | `/receive` | Fetch re-encrypted cfrags + decrypt with own key |
 
 ---
 
-## Example: Manual cURL Flow
+## Rust Implementation
+
+Production-quality Rust implementation in `rust/`:
 
 ```bash
-# 1. Encrypt
-curl -X POST http://localhost:8011/encrypt \
-  -H 'Content-Type: application/json' \
-  -d '{"plaintext": "hello clawback"}'
-
-# 2. Receive (use payload_id and share_token from above)
-curl -X POST http://localhost:8012/receive \
-  -H 'Content-Type: application/json' \
-  -d '{"payload_id": "...", "share_token": "..."}'
-
-# 3. Revoke
-curl -X POST http://localhost:8011/revoke/{payload_id} \
-  -H 'Content-Type: application/json' \
-  -d '{"share_id": "..."}'
-
-# 4. Try to receive again (expect 403)
-curl -X POST http://localhost:8012/receive \
-  -H 'Content-Type: application/json' \
-  -d '{"payload_id": "...", "share_token": "..."}'
-
-# 5. Get destruction receipt
-curl http://localhost:8010/receipts/{payload_id}
+cd rust
+cargo build    # 5 binaries: broker, sender, receiver, clawback-verify, libclawback
+cargo test     # 28 tests: 5 unit + 13 stress + 10 verify
 ```
+
+Crates: `umbral-pre`, `chacha20poly1305`, `axum`, `tokio`, `serde`
 
 ---
 
-## What's Next
+## PCC Alignment
 
-This PoC proves the concept. The roadmap:
+Clawback implements the same two core properties as Apple's Private Cloud Compute:
 
-- **True PRE**: Replace HKDF simulation with Umbral PRE (NuCypher) for real proxy re-encryption where the broker never holds a plaintext-equivalent key
-- **Signed share tokens**: Replace bare UUIDs with signed JWTs (ECDSA) so share tokens are unforgeable
-- **Time-limited shares**: Embed expiry in share tokens — auto-revoke after N hours
-- **Threshold access**: M-of-N broker nodes must cooperate to serve a key
-- **On-chain receipts**: Log destruction proofs to a blockchain for public auditability
-- **SDK**: Python/JS client library wrapping the full flow
+| Property | Apple PCC | Clawback |
+|----------|-----------|----------|
+| Zero-knowledge processing | Custom silicon + Secure Enclave | Umbral PRE (broker cannot decrypt) |
+| Cryptographic attestation | Hardware-signed PCR measurements | Ed25519-signed attestation (Nitro-ready) |
+| Transparency log | Published software images | `GET /attestation` + published PCR0 |
+| Verifiable by third parties | Certificate chain to Apple root CA | Certificate chain to AWS Nitro root CA (Phase 2b) |
+
+See `docs/PCC-INTEGRATION.md` for full analysis.
 
 ---
 
 ## Project
 
-**Clawback Protocol** — Open source privacy-preserving data revocation  
-Domains: clawbackprotocol.org / clawbackprotocol.com  
+**Clawback Protocol** — Open source privacy-preserving data revocation
+Owner: Secundus Nulli LLC / Eternal Light Trust
+USPTO: Serial No. 99657348
+License: AGPLv3
+Domains: clawbackprotocol.org / clawbackprotocol.com
 GitHub: github.com/clawback-protocol
 
 > *The internet was built to never forget. Clawback makes forgetting a first-class operation.*

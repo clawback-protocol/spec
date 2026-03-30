@@ -1,8 +1,8 @@
 # Security Audit — Clawback Protocol PoC
 
-Date: 2026-03-29
+Date: 2026-03-30 (updated from 2026-03-29)
 Auditor: Claude Code
-Scope: Python PoC (`broker/app.py`, `sender/app.py`, `receiver/app.py`)
+Scope: Python PoC (`broker/app.py`, `sender/app.py`, `receiver/app.py`, `nitro_attestation.py`)
 
 ---
 
@@ -17,10 +17,10 @@ Scope: Python PoC (`broker/app.py`, `sender/app.py`, `receiver/app.py`)
 
 ### [MEDIUM] All shares for same payload receive identical key bytes
 
-- **File:** `sender/app.py:48-63` (`_derive_share_key`)
-- **Issue:** The `_derive_share_key()` function returns `enc_key` directly for all shares. This means every share token for the same payload decrypts to the same key bytes. If a receiver caches the key before revocation, they retain decryption capability even after their specific share is revoked.
-- **Fix:** This is an acknowledged limitation of the simulated PRE model. In true PRE (Umbral), each receiver gets a unique re-encryption key and revoking kfrags makes re-encryption impossible. Documented in architecture.
-- **Status:** ACKNOWLEDGED — will be resolved by Umbral PRE migration (Phase 2)
+- **File:** `sender/app.py` (formerly `_derive_share_key`)
+- **Issue:** In the old simulated PRE model, all shares received identical `enc_key` bytes. A receiver caching the key could retain access after revocation.
+- **Fix:** **RESOLVED in Phase 2.** Umbral PRE generates unique kfrags per receiver. Each receiver gets receiver-specific capsule fragments (cfrags) that only their private key can decrypt. Revoking kfrags makes re-encryption mathematically impossible. Verified by 31-point audit including wrong-receiver rejection test.
+- **Status:** FIXED (Phase 2 — Umbral PRE)
 
 ### [MEDIUM] No authentication on any endpoint
 
@@ -31,10 +31,10 @@ Scope: Python PoC (`broker/app.py`, `sender/app.py`, `receiver/app.py`)
 
 ### [MEDIUM] Broker holds plaintext-equivalent share keys
 
-- **File:** `broker/app.py:139` (fetch endpoint returns `share_key`)
-- **Issue:** In the simulated PRE model, the broker stores and returns `share_key` which is the actual encryption key. A compromised broker could decrypt all stored payloads. This is the fundamental limitation that true PRE eliminates.
-- **Fix:** This is the core motivation for migrating to Umbral PRE, where the broker holds re-encryption keys that cannot be used to decrypt directly.
-- **Status:** ACKNOWLEDGED — core design limitation of simulated PRE
+- **File:** `broker/app.py` (formerly fetch endpoint returned `share_key`)
+- **Issue:** In the old simulated PRE model, the broker stored `share_key` which was the actual encryption key. A compromised broker could decrypt all stored payloads.
+- **Fix:** **RESOLVED in Phase 2.** Broker now holds kfrags (re-encryption key fragments) via Umbral PRE. kfrags can only re-encrypt capsules — they cannot decrypt data. Even a fully compromised broker cannot access plaintext. Fetch endpoint now returns `cfrags` (re-encrypted capsule fragments), not `share_key`.
+- **Status:** FIXED (Phase 2 — Umbral PRE, zero-knowledge broker)
 
 ### [LOW] No base64 validation on broker registration
 
