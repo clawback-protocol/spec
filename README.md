@@ -120,7 +120,6 @@ pip install flask cryptography requests umbral cbor2
 ### Run the PII Revocation Demo
 
 ```bash
-cd /path/to/clawback-poc
 python3 demo_pii_signup.py
 ```
 
