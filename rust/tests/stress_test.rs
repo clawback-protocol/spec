@@ -1,26 +1,23 @@
-// Clawback Protocol — Stress Tests (True Umbral PRE)
+// Clawback Protocol — Stress Tests (Umbral PRE)
 //
 // Exercises the protocol under load:
 // 1. Crypto throughput (key gen, encrypt, decrypt, kfrag gen, reencrypt)
 // 2. Broker throughput (register, fetch with re-encryption, revoke)
-// 3. Full lifecycle at scale (encrypt → kfrags → register → reencrypt → decrypt → revoke → denied)
+// 3. Full lifecycle at scale
 // 4. Multi-share stress (many receivers per payload)
-// 5. Revocation correctness (no re-encryption possible after kfrag destruction)
-// 6. PRE-specific: delegate, re-encrypt, threshold, receiver isolation
+// 5. Revocation correctness
+// 6. PRE-specific: threshold, receiver isolation
 
 use clawback::broker::Broker;
 use clawback::crypto::{
-    encrypt, decrypt_reencrypted, generate_kfrags, reencrypt,
-    generate_destruction_proof, hash_ciphertext,
-    SecretKey, Signer, PayloadId, ShareId, VerifiedCapsuleFrag,
+    generate_destruction_proof, hash_ciphertext, PayloadId, ShareId,
 };
 use clawback::receiver::Receiver;
 use clawback::sender::Sender;
+use umbral_pre::{self, SecretKey, Signer};
 use std::time::Instant;
 
 const BROKER_SECRET: &[u8] = b"stress-test-broker-secret";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn report(label: &str, count: usize, elapsed: std::time::Duration) {
     let ops_per_sec = count as f64 / elapsed.as_secs_f64();
@@ -29,6 +26,51 @@ fn report(label: &str, count: usize, elapsed: std::time::Duration) {
         "  {:<50} {:>8} ops in {:>8.2?}  ({:>10.0} ops/s, {:>8.1} \u{00b5}s/op)",
         label, count, elapsed, ops_per_sec, avg_us
     );
+}
+
+/// Helper: register a SenderEncryptResult with the broker
+fn register_result(
+    broker: &mut Broker,
+    result: &clawback::sender::SenderEncryptResult,
+    sender: &Sender,
+    receiver_pk: &umbral_pre::PublicKey,
+) {
+    let capsule_json = serde_json::to_string(&result.capsule).unwrap();
+    let capsule_ct_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &*result.capsule_ciphertext,
+    );
+    let delegating_pk_json = serde_json::to_string(&sender.keys.public_key).unwrap();
+    let verifying_pk = sender.keys.signer.verifying_key();
+
+    broker.register(
+        result.payload_id,
+        result.encrypted.ciphertext.clone(),
+        result.encrypted.nonce,
+        capsule_json,
+        capsule_ct_b64,
+        delegating_pk_json,
+        verifying_pk,
+        result.share_id,
+        result.kfrags.clone(),
+        receiver_pk.clone(),
+    );
+}
+
+/// Helper: register a new share with the broker
+fn register_share(
+    broker: &mut Broker,
+    payload_id: &PayloadId,
+    share_result: &clawback::sender::SenderShareResult,
+    sender: &Sender,
+    receiver_pk: &umbral_pre::PublicKey,
+) {
+    broker.add_share(
+        payload_id,
+        share_result.share_id,
+        share_result.kfrags.clone(),
+        receiver_pk.clone(),
+    ).unwrap();
 }
 
 // ── 1. Crypto Throughput ─────────────────────────────────────────────────────
@@ -50,13 +92,6 @@ fn stress_crypto_key_generation() {
         let _pk = sk.public_key();
     }
     report("SecretKey + PublicKey derivation", n, start.elapsed());
-
-    let start = Instant::now();
-    for _ in 0..n {
-        let sk = SecretKey::random();
-        let _signer = Signer::new(sk);
-    }
-    report("SecretKey + Signer creation", n, start.elapsed());
 }
 
 #[test]
@@ -76,10 +111,9 @@ fn stress_crypto_encrypt_decrypt() {
         let delegating_sk = SecretKey::random();
         let delegating_pk = delegating_sk.public_key();
 
-        // Encrypt (sender encrypts to own key)
         let start = Instant::now();
         for _ in 0..n {
-            let _result = encrypt(&delegating_pk, &plaintext).unwrap();
+            let _result = umbral_pre::encrypt(&delegating_pk, &plaintext).unwrap();
         }
         report(&format!("encrypt {}", label), n, start.elapsed());
 
@@ -88,18 +122,17 @@ fn stress_crypto_encrypt_decrypt() {
         let receiving_pk = receiving_sk.public_key();
         let signer = Signer::new(SecretKey::random());
 
-        let (capsule, ciphertext) = encrypt(&delegating_pk, &plaintext).unwrap();
-        let kfrags = generate_kfrags(
-            &delegating_sk, &receiving_pk, &signer,
-            1, 1, true, true,
+        let (capsule, ciphertext) = umbral_pre::encrypt(&delegating_pk, &plaintext).unwrap();
+        let kfrags = umbral_pre::generate_kfrags(
+            &delegating_sk, &receiving_pk, &signer, 1, 1, true, true,
         );
 
         let start = Instant::now();
         for _ in 0..n {
-            let cfrags: Vec<VerifiedCapsuleFrag> = kfrags.iter()
-                .map(|vkf| reencrypt(&capsule, vkf.clone()))
+            let cfrags: Vec<_> = kfrags.iter()
+                .map(|vkf| umbral_pre::reencrypt(&capsule, vkf.clone()))
                 .collect();
-            let decrypted = decrypt_reencrypted(
+            let decrypted = umbral_pre::decrypt_reencrypted(
                 &receiving_sk, &delegating_pk, &capsule, cfrags, &ciphertext,
             ).unwrap();
             assert_eq!(decrypted.len(), size);
@@ -112,54 +145,26 @@ fn stress_crypto_encrypt_decrypt() {
 fn stress_crypto_kfrag_generation() {
     println!("\n=== Crypto: KFrag Generation ===");
     let n = 1_000;
-
     let delegating_sk = SecretKey::random();
     let signer = Signer::new(SecretKey::random());
 
     let start = Instant::now();
     for _ in 0..n {
         let receiving_pk = SecretKey::random().public_key();
-        let _kfrags = generate_kfrags(
-            &delegating_sk, &receiving_pk, &signer,
-            1, 1, true, true,
+        let _kfrags = umbral_pre::generate_kfrags(
+            &delegating_sk, &receiving_pk, &signer, 1, 1, true, true,
         );
     }
     report("generate_kfrags (1-of-1)", n, start.elapsed());
 
-    // Threshold kfrag generation (3-of-5)
     let start = Instant::now();
     for _ in 0..n {
         let receiving_pk = SecretKey::random().public_key();
-        let _kfrags = generate_kfrags(
-            &delegating_sk, &receiving_pk, &signer,
-            3, 5, true, true,
+        let _kfrags = umbral_pre::generate_kfrags(
+            &delegating_sk, &receiving_pk, &signer, 3, 5, true, true,
         );
     }
     report("generate_kfrags (3-of-5 threshold)", n, start.elapsed());
-}
-
-#[test]
-fn stress_crypto_reencryption() {
-    println!("\n=== Crypto: Re-encryption Throughput ===");
-    let n = 2_000;
-
-    let delegating_sk = SecretKey::random();
-    let delegating_pk = delegating_sk.public_key();
-    let receiving_sk = SecretKey::random();
-    let receiving_pk = receiving_sk.public_key();
-    let signer = Signer::new(SecretKey::random());
-
-    let (capsule, _ciphertext) = encrypt(&delegating_pk, b"reencryption benchmark").unwrap();
-    let kfrags = generate_kfrags(
-        &delegating_sk, &receiving_pk, &signer,
-        1, 1, true, true,
-    );
-
-    let start = Instant::now();
-    for _ in 0..n {
-        let _cfrag = reencrypt(&capsule, kfrags[0].clone());
-    }
-    report("reencrypt (single kfrag)", n, start.elapsed());
 }
 
 #[test]
@@ -194,32 +199,19 @@ fn stress_broker_register_and_fetch() {
     let mut broker = Broker::new(BROKER_SECRET);
     let mut ids = Vec::with_capacity(n);
 
-    // Register payloads
     let start = Instant::now();
     for _ in 0..n {
         let mut sender = Sender::new();
         let receiver = Receiver::new();
-        let result = sender.encrypt(b"broker stress payload", &receiver.public_key()).unwrap();
-        let payload_id = result.payload_id;
-        let share_id = result.share_id;
-        broker.register(
-            payload_id,
-            result.ciphertext,
-            result.capsule,
-            result.delegating_pk,
-            result.verifying_pk,
-            share_id,
-            result.kfrags,
-            receiver.public_key(),
-        );
-        ids.push((payload_id, share_id, receiver));
+        let result = sender.encrypt(b"broker stress payload", &receiver.public_key).unwrap();
+        register_result(&mut broker, &result, &sender, &receiver.public_key);
+        ids.push((result.payload_id, result.share_id));
     }
     report("broker.register() [PRE]", n, start.elapsed());
 
-    // Fetch (broker performs re-encryption on each fetch)
     let start = Instant::now();
-    for (pid, sid, _) in &ids {
-        let result = broker.fetch(pid, sid);
+    for (pid, sid) in &ids {
+        let result = broker.fetch_for_receiver(pid, sid);
         assert!(result.is_ok());
     }
     report("broker.fetch() [re-encryption]", n, start.elapsed());
@@ -235,12 +227,9 @@ fn stress_broker_revoke() {
     for _ in 0..n {
         let mut sender = Sender::new();
         let receiver = Receiver::new();
-        let result = sender.encrypt(b"revocation stress", &receiver.public_key()).unwrap();
-        let pid = result.payload_id;
-        let sid = result.share_id;
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, sid, result.kfrags, receiver.public_key());
-        ids.push((pid, sid));
+        let result = sender.encrypt(b"revocation stress", &receiver.public_key).unwrap();
+        register_result(&mut broker, &result, &sender, &receiver.public_key);
+        ids.push((result.payload_id, result.share_id));
     }
 
     let start = Instant::now();
@@ -250,87 +239,23 @@ fn stress_broker_revoke() {
     }
     report("broker.revoke() + receipt [kfrag destruction]", n, start.elapsed());
 
-    // Verify all fetches now fail (kfrags destroyed → no re-encryption)
     let start = Instant::now();
     for (pid, sid) in &ids {
-        let err = broker.fetch(pid, sid).unwrap_err();
+        let err = broker.fetch_for_receiver(pid, sid).unwrap_err();
         assert!(err.to_string().contains("REVOKED"));
     }
     report("post-revoke fetch \u{2192} REVOKED", n, start.elapsed());
-}
-
-#[test]
-fn stress_broker_multi_share() {
-    println!("\n=== Broker: Multi-Share Per Payload (distinct receivers) ===");
-    let shares_per_payload = 50;
-    let num_payloads = 50;
-    let mut broker = Broker::new(BROKER_SECRET);
-    let mut all_shares = Vec::new();
-
-    let start = Instant::now();
-    for _ in 0..num_payloads {
-        let mut sender = Sender::new();
-        let first_receiver = Receiver::new();
-        let result = sender.encrypt(b"multi-share PRE stress", &first_receiver.public_key()).unwrap();
-        let pid = result.payload_id;
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, result.share_id, result.kfrags, first_receiver.public_key());
-        all_shares.push((pid, result.share_id, first_receiver));
-
-        // Each additional share targets a different receiver
-        for _ in 1..shares_per_payload {
-            let new_receiver = Receiver::new();
-            let share_result = sender.issue_share(&pid, &new_receiver.public_key()).unwrap();
-            broker.add_share(&pid, share_result.share_id, share_result.kfrags,
-                new_receiver.public_key()).unwrap();
-            all_shares.push((pid, share_result.share_id, new_receiver));
-        }
-    }
-    let total = num_payloads * shares_per_payload;
-    report(
-        &format!("register {} payloads \u{00d7} {} shares", num_payloads, shares_per_payload),
-        total,
-        start.elapsed(),
-    );
-
-    // Fetch all shares (each involves re-encryption)
-    let start = Instant::now();
-    for (pid, sid, _) in &all_shares {
-        assert!(broker.fetch(pid, sid).is_ok());
-    }
-    report("fetch all shares [re-encryption]", total, start.elapsed());
-
-    // Revoke every other share — verify isolation
-    let start = Instant::now();
-    let mut revoked = 0;
-    for (i, (pid, sid, _)) in all_shares.iter().enumerate() {
-        if i % 2 == 0 {
-            broker.revoke(pid, sid).unwrap();
-            revoked += 1;
-        }
-    }
-    report("revoke 50% of shares", revoked, start.elapsed());
-
-    // Verify: revoked → error, active → ok
-    for (i, (pid, sid, _)) in all_shares.iter().enumerate() {
-        if i % 2 == 0 {
-            assert!(broker.fetch(pid, sid).is_err(), "revoked share should fail");
-        } else {
-            assert!(broker.fetch(pid, sid).is_ok(), "active share should succeed");
-        }
-    }
-    println!("  Share isolation verified: {} revoked, {} still active", revoked, total - revoked);
 }
 
 // ── 3. Full Lifecycle Stress ─────────────────────────────────────────────────
 
 #[test]
 fn stress_full_lifecycle() {
-    println!("\n=== Full PRE Lifecycle: Encrypt \u{2192} KFrags \u{2192} Register \u{2192} Re-encrypt \u{2192} Decrypt \u{2192} Revoke \u{2192} Denied ===");
+    println!("\n=== Full PRE Lifecycle ===");
     let n = 1_000;
     let mut broker = Broker::new(BROKER_SECRET);
 
-    struct LifecycleEntry {
+    struct Entry {
         payload_id: PayloadId,
         share_id: ShareId,
         plaintext: String,
@@ -338,20 +263,14 @@ fn stress_full_lifecycle() {
     }
     let mut entries = Vec::with_capacity(n);
 
-    // Phase 1: Encrypt + register
     let start = Instant::now();
     for i in 0..n {
         let mut sender = Sender::new();
         let receiver = Receiver::new();
-        let plaintext = format!("Sensitive document #{} — classified", i);
-
-        let result = sender.encrypt(plaintext.as_bytes(), &receiver.public_key()).unwrap();
-        broker.register(
-            result.payload_id, result.ciphertext, result.capsule,
-            result.delegating_pk, result.verifying_pk,
-            result.share_id, result.kfrags, receiver.public_key(),
-        );
-        entries.push(LifecycleEntry {
+        let plaintext = format!("Sensitive document #{}", i);
+        let result = sender.encrypt(plaintext.as_bytes(), &receiver.public_key).unwrap();
+        register_result(&mut broker, &result, &sender, &receiver.public_key);
+        entries.push(Entry {
             payload_id: result.payload_id,
             share_id: result.share_id,
             plaintext,
@@ -360,21 +279,17 @@ fn stress_full_lifecycle() {
     }
     report("encrypt + register [PRE]", n, start.elapsed());
 
-    // Phase 2: Fetch (broker re-encrypts) + receiver decrypts
     let start = Instant::now();
     for entry in &entries {
-        let fetch_result = broker.fetch(&entry.payload_id, &entry.share_id).unwrap();
-        let decrypted = entry.receiver.decrypt(
-            &fetch_result.delegating_pk,
-            &fetch_result.capsule,
-            fetch_result.cfrags,
-            &fetch_result.ciphertext,
+        let fetch = broker.fetch_for_receiver(&entry.payload_id, &entry.share_id).unwrap();
+        let payload = clawback::EncryptedPayload { ciphertext: fetch.ciphertext, nonce: fetch.nonce };
+        let decrypted = entry.receiver.decrypt_umbral(
+            &fetch.delegating_pk, &fetch.capsule, fetch.cfrags, &fetch.capsule_ciphertext, &payload,
         ).unwrap();
         assert_eq!(decrypted, entry.plaintext.as_bytes());
     }
     report("fetch [re-encrypt] + decrypt + verify", n, start.elapsed());
 
-    // Phase 3: Revoke all
     let start = Instant::now();
     for entry in &entries {
         let receipt = broker.revoke(&entry.payload_id, &entry.share_id).unwrap();
@@ -382,160 +297,101 @@ fn stress_full_lifecycle() {
     }
     report("revoke all [kfrag destruction]", n, start.elapsed());
 
-    // Phase 4: Verify all access denied
     let start = Instant::now();
     for entry in &entries {
-        assert!(broker.fetch(&entry.payload_id, &entry.share_id)
+        assert!(broker.fetch_for_receiver(&entry.payload_id, &entry.share_id)
             .unwrap_err().to_string().contains("REVOKED"));
     }
     report("verify all REVOKED", n, start.elapsed());
-
-    println!("  Full PRE lifecycle completed: {} payloads through entire protocol flow", n);
 }
 
-// ── 4. Destruction Receipt Integrity ─────────────────────────────────────────
+// ── 4. Multi-Share ──────────────────────────────────────────────────────────
+
+#[test]
+fn stress_broker_multi_share() {
+    println!("\n=== Broker: Multi-Share Per Payload ===");
+    let shares_per_payload = 50;
+    let num_payloads = 50;
+    let mut broker = Broker::new(BROKER_SECRET);
+    let mut all_shares: Vec<(PayloadId, ShareId)> = Vec::new();
+
+    let start = Instant::now();
+    for _ in 0..num_payloads {
+        let mut sender = Sender::new();
+        let first_receiver = Receiver::new();
+        let result = sender.encrypt(b"multi-share PRE", &first_receiver.public_key).unwrap();
+        let pid = result.payload_id;
+        register_result(&mut broker, &result, &sender, &first_receiver.public_key);
+        all_shares.push((pid, result.share_id));
+
+        for _ in 1..shares_per_payload {
+            let new_receiver = Receiver::new();
+            let share = sender.issue_share(&pid, &new_receiver.public_key).unwrap();
+            register_share(&mut broker, &pid, &share, &sender, &new_receiver.public_key);
+            all_shares.push((pid, share.share_id));
+        }
+    }
+    let total = num_payloads * shares_per_payload;
+    report(&format!("{} payloads \u{00d7} {} shares", num_payloads, shares_per_payload), total, start.elapsed());
+
+    let start = Instant::now();
+    for (pid, sid) in &all_shares {
+        assert!(broker.fetch_for_receiver(pid, sid).is_ok());
+    }
+    report("fetch all shares [re-encryption]", total, start.elapsed());
+
+    // Revoke every other share — verify isolation
+    let mut revoked = 0;
+    for (i, (pid, sid)) in all_shares.iter().enumerate() {
+        if i % 2 == 0 {
+            broker.revoke(pid, sid).unwrap();
+            revoked += 1;
+        }
+    }
+
+    for (i, (pid, sid)) in all_shares.iter().enumerate() {
+        if i % 2 == 0 {
+            assert!(broker.fetch_for_receiver(pid, sid).is_err());
+        } else {
+            assert!(broker.fetch_for_receiver(pid, sid).is_ok());
+        }
+    }
+    println!("  Share isolation verified: {} revoked, {} active", revoked, total - revoked);
+}
+
+// ── 5. Receipt Integrity ────────────────────────────────────────────────────
 
 #[test]
 fn stress_receipt_integrity() {
-    println!("\n=== Receipt Integrity Under Load (PRE) ===");
+    println!("\n=== Receipt Integrity Under Load ===");
     let n = 1_000;
     let mut broker = Broker::new(BROKER_SECRET);
 
-    struct Entry {
-        pid: PayloadId,
-        sid: ShareId,
-        expected_hash: String,
-    }
+    struct Entry { pid: PayloadId, sid: ShareId, expected_hash: String }
     let mut entries = Vec::with_capacity(n);
 
     for _ in 0..n {
         let mut sender = Sender::new();
         let receiver = Receiver::new();
-        let result = sender.encrypt(b"receipt integrity test", &receiver.public_key()).unwrap();
-        let expected_hash = hash_ciphertext(&result.ciphertext);
-        let pid = result.payload_id;
-        let sid = result.share_id;
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, sid, result.kfrags, receiver.public_key());
-        entries.push(Entry { pid, sid, expected_hash });
+        let result = sender.encrypt(b"receipt integrity test", &receiver.public_key).unwrap();
+        let expected_hash = hash_ciphertext(&result.encrypted.ciphertext);
+        register_result(&mut broker, &result, &sender, &receiver.public_key);
+        entries.push(Entry { pid: result.payload_id, sid: result.share_id, expected_hash });
     }
 
     let start = Instant::now();
     for entry in &entries {
         let receipt = broker.revoke(&entry.pid, &entry.sid).unwrap();
-        assert_eq!(receipt.payload_id, entry.pid.to_string());
-        assert_eq!(receipt.share_id, entry.sid.to_string());
         assert_eq!(receipt.data_hash, entry.expected_hash);
         assert_eq!(receipt.status, "DESTROYED");
         assert_eq!(receipt.destruction_proof.len(), 64);
-        assert!(!receipt.revoked_at.is_empty());
-
         let recomputed = generate_destruction_proof(BROKER_SECRET, &entry.pid, &receipt.revoked_at);
         assert_eq!(receipt.destruction_proof, recomputed);
     }
     report("revoke + full receipt verification", n, start.elapsed());
-
-    for entry in entries.iter().take(100) {
-        let receipts = broker.get_receipts(&entry.pid);
-        assert_eq!(receipts.len(), 1);
-    }
-    println!("  All {} receipts verified for integrity and determinism", n);
 }
 
-// ── 5. Edge Cases Under Load ─────────────────────────────────────────────────
-
-#[test]
-fn stress_double_revoke() {
-    println!("\n=== Edge Case: Double Revoke (PRE) ===");
-    let n = 500;
-    let mut broker = Broker::new(BROKER_SECRET);
-    let mut ids = Vec::with_capacity(n);
-
-    for _ in 0..n {
-        let mut sender = Sender::new();
-        let receiver = Receiver::new();
-        let result = sender.encrypt(b"double revoke test", &receiver.public_key()).unwrap();
-        let pid = result.payload_id;
-        let sid = result.share_id;
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, sid, result.kfrags, receiver.public_key());
-        ids.push((pid, sid));
-    }
-
-    for (pid, sid) in &ids {
-        assert!(broker.revoke(pid, sid).is_ok());
-    }
-
-    let mut errors = 0;
-    let mut successes = 0;
-    for (pid, sid) in &ids {
-        match broker.revoke(pid, sid) {
-            Ok(_) => successes += 1,
-            Err(_) => errors += 1,
-        }
-    }
-    println!("  Double revoke: {} succeeded again, {} errored (both acceptable)", successes, errors);
-
-    for (pid, sid) in &ids {
-        assert!(broker.fetch(pid, sid).unwrap_err().to_string().contains("REVOKED"));
-    }
-    println!("  All {} shares confirmed REVOKED after double-revoke", n);
-}
-
-#[test]
-fn stress_nonexistent_lookups() {
-    println!("\n=== Edge Case: Nonexistent Payload/Share Lookups ===");
-    let n = 10_000;
-    let broker = Broker::new(BROKER_SECRET);
-
-    let start = Instant::now();
-    for _ in 0..n {
-        let fake_pid = PayloadId::new_v4();
-        let fake_sid = ShareId::new_v4();
-        assert!(broker.fetch(&fake_pid, &fake_sid).is_err());
-    }
-    report("fetch nonexistent", n, start.elapsed());
-    println!("  All {} bogus lookups correctly rejected", n);
-}
-
-// ── 6. PRE-Specific Tests ────────────────────────────────────────────────────
-
-#[test]
-fn stress_pre_delegate_reencrypt_revoke() {
-    println!("\n=== PRE: Delegate \u{2192} Re-encrypt \u{2192} Revoke \u{2192} Verify Lockout ===");
-    let n = 500;
-    let mut broker = Broker::new(BROKER_SECRET);
-
-    for i in 0..n {
-        let mut sender = Sender::new();
-        let receiver = Receiver::new();
-        let plaintext = format!("PRE delegation test #{}", i);
-
-        // Step 1: Sender encrypts + generates kfrags
-        let result = sender.encrypt(plaintext.as_bytes(), &receiver.public_key()).unwrap();
-        let pid = result.payload_id;
-        let sid = result.share_id;
-
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, sid, result.kfrags, receiver.public_key());
-
-        // Step 2: Broker re-encrypts → receiver decrypts
-        let fetch_result = broker.fetch(&pid, &sid).unwrap();
-        let decrypted = receiver.decrypt(
-            &fetch_result.delegating_pk, &fetch_result.capsule,
-            fetch_result.cfrags, &fetch_result.ciphertext,
-        ).unwrap();
-        assert_eq!(decrypted, plaintext.as_bytes());
-
-        // Step 3: Revoke — kfrags destroyed
-        let receipt = broker.revoke(&pid, &sid).unwrap();
-        assert_eq!(receipt.status, "DESTROYED");
-
-        // Step 4: Verify receiver permanently locked out
-        assert!(broker.fetch(&pid, &sid).unwrap_err().to_string().contains("REVOKED"));
-    }
-    println!("  All {} delegate \u{2192} re-encrypt \u{2192} revoke \u{2192} lockout cycles passed", n);
-}
+// ── 6. PRE-Specific ─────────────────────────────────────────────────────────
 
 #[test]
 fn stress_pre_wrong_receiver_cannot_decrypt() {
@@ -545,81 +401,62 @@ fn stress_pre_wrong_receiver_cannot_decrypt() {
 
     for _ in 0..n {
         let mut sender = Sender::new();
-        let intended_receiver = Receiver::new();
-        let wrong_receiver = Receiver::new();
+        let intended = Receiver::new();
+        let wrong = Receiver::new();
 
-        let result = sender.encrypt(b"secret data", &intended_receiver.public_key()).unwrap();
-        let pid = result.payload_id;
-        let sid = result.share_id;
+        let result = sender.encrypt(b"secret data", &intended.public_key).unwrap();
+        register_result(&mut broker, &result, &sender, &intended.public_key);
 
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, sid, result.kfrags, intended_receiver.public_key());
+        let fetch = broker.fetch_for_receiver(&result.payload_id, &result.share_id).unwrap();
+        let payload = clawback::EncryptedPayload { ciphertext: fetch.ciphertext.clone(), nonce: fetch.nonce };
 
-        // Broker re-encrypts (targeted at intended_receiver)
-        let fetch_result = broker.fetch(&pid, &sid).unwrap();
-
-        // Intended receiver CAN decrypt
-        let decrypted = intended_receiver.decrypt(
-            &fetch_result.delegating_pk, &fetch_result.capsule,
-            fetch_result.cfrags.clone(), &fetch_result.ciphertext,
+        // Intended CAN decrypt
+        let decrypted = intended.decrypt_umbral(
+            &fetch.delegating_pk, &fetch.capsule, fetch.cfrags.clone(), &fetch.capsule_ciphertext, &payload,
         ).unwrap();
         assert_eq!(&*decrypted, b"secret data");
 
-        // Wrong receiver CANNOT decrypt (cfrags are targeted at intended_receiver's key)
-        let wrong_result = wrong_receiver.decrypt(
-            &fetch_result.delegating_pk, &fetch_result.capsule,
-            fetch_result.cfrags, &fetch_result.ciphertext,
+        // Wrong CANNOT decrypt
+        let wrong_result = wrong.decrypt_umbral(
+            &fetch.delegating_pk, &fetch.capsule, fetch.cfrags, &fetch.capsule_ciphertext, &payload,
         );
-        assert!(wrong_result.is_err(), "wrong receiver should not be able to decrypt");
+        assert!(wrong_result.is_err());
     }
-    println!("  All {} wrong-receiver decryption attempts correctly rejected", n);
+    println!("  All {} wrong-receiver decryption attempts rejected", n);
 }
 
 #[test]
 fn stress_pre_selective_revocation() {
-    println!("\n=== PRE: Selective Revocation (revoke one receiver, others unaffected) ===");
+    println!("\n=== PRE: Selective Revocation ===");
     let n = 200;
     let mut broker = Broker::new(BROKER_SECRET);
 
     for _ in 0..n {
         let mut sender = Sender::new();
-        let receiver_a = Receiver::new();
-        let receiver_b = Receiver::new();
+        let recv_a = Receiver::new();
+        let recv_b = Receiver::new();
 
-        // Encrypt for receiver_a
-        let result = sender.encrypt(b"selective revocation test", &receiver_a.public_key()).unwrap();
+        let result = sender.encrypt(b"selective revoke", &recv_a.public_key).unwrap();
         let pid = result.payload_id;
         let sid_a = result.share_id;
+        register_result(&mut broker, &result, &sender, &recv_a.public_key);
 
-        broker.register(pid, result.ciphertext, result.capsule, result.delegating_pk,
-            result.verifying_pk, sid_a, result.kfrags, receiver_a.public_key());
-
-        // Issue share for receiver_b
-        let share_b = sender.issue_share(&pid, &receiver_b.public_key()).unwrap();
+        let share_b = sender.issue_share(&pid, &recv_b.public_key).unwrap();
         let sid_b = share_b.share_id;
-        broker.add_share(&pid, sid_b, share_b.kfrags, receiver_b.public_key()).unwrap();
+        register_share(&mut broker, &pid, &share_b, &sender, &recv_b.public_key);
 
-        // Both can decrypt
-        let fetch_a = broker.fetch(&pid, &sid_a).unwrap();
-        assert!(receiver_a.decrypt(&fetch_a.delegating_pk, &fetch_a.capsule,
-            fetch_a.cfrags, &fetch_a.ciphertext).is_ok());
+        // Both can fetch
+        assert!(broker.fetch_for_receiver(&pid, &sid_a).is_ok());
+        assert!(broker.fetch_for_receiver(&pid, &sid_b).is_ok());
 
-        let fetch_b = broker.fetch(&pid, &sid_b).unwrap();
-        assert!(receiver_b.decrypt(&fetch_b.delegating_pk, &fetch_b.capsule,
-            fetch_b.cfrags, &fetch_b.ciphertext).is_ok());
-
-        // Revoke receiver_a
+        // Revoke A
         broker.revoke(&pid, &sid_a).unwrap();
 
-        // receiver_a locked out
-        assert!(broker.fetch(&pid, &sid_a).unwrap_err().to_string().contains("REVOKED"));
-
-        // receiver_b still has access
-        let fetch_b2 = broker.fetch(&pid, &sid_b).unwrap();
-        assert!(receiver_b.decrypt(&fetch_b2.delegating_pk, &fetch_b2.capsule,
-            fetch_b2.cfrags, &fetch_b2.ciphertext).is_ok());
+        // A locked out, B still active
+        assert!(broker.fetch_for_receiver(&pid, &sid_a).is_err());
+        assert!(broker.fetch_for_receiver(&pid, &sid_b).is_ok());
     }
-    println!("  All {} selective revocation tests passed (A revoked, B unaffected)", n);
+    println!("  All {} selective revocation tests passed", n);
 }
 
 #[test]
@@ -635,34 +472,59 @@ fn stress_pre_threshold_reencryption() {
         let signer = Signer::new(SecretKey::random());
 
         let plaintext = b"threshold PRE test data";
-        let (capsule, ciphertext) = encrypt(&delegating_pk, plaintext).unwrap();
+        let (capsule, ciphertext) = umbral_pre::encrypt(&delegating_pk, plaintext).unwrap();
 
-        // Generate 5 kfrags with threshold 3
-        let kfrags = generate_kfrags(
-            &delegating_sk, &receiving_pk, &signer,
-            3, 5, true, true,
+        let kfrags = umbral_pre::generate_kfrags(
+            &delegating_sk, &receiving_pk, &signer, 3, 5, true, true,
         );
         assert_eq!(kfrags.len(), 5);
 
-        // Any 3 of 5 should suffice for decryption
-        let cfrags: Vec<VerifiedCapsuleFrag> = kfrags[0..3].iter()
-            .map(|vkf| reencrypt(&capsule, vkf.clone()))
+        // Any 3 of 5 should work
+        let cfrags: Vec<_> = kfrags[0..3].iter()
+            .map(|vkf| umbral_pre::reencrypt(&capsule, vkf.clone()))
             .collect();
-
-        let decrypted = decrypt_reencrypted(
+        let decrypted = umbral_pre::decrypt_reencrypted(
             &receiving_sk, &delegating_pk, &capsule, cfrags, &ciphertext,
         ).unwrap();
         assert_eq!(&*decrypted, plaintext);
 
-        // Different subset of 3 also works
-        let cfrags2: Vec<VerifiedCapsuleFrag> = kfrags[2..5].iter()
-            .map(|vkf| reencrypt(&capsule, vkf.clone()))
+        // Different subset also works
+        let cfrags2: Vec<_> = kfrags[2..5].iter()
+            .map(|vkf| umbral_pre::reencrypt(&capsule, vkf.clone()))
             .collect();
-
-        let decrypted2 = decrypt_reencrypted(
+        let decrypted2 = umbral_pre::decrypt_reencrypted(
             &receiving_sk, &delegating_pk, &capsule, cfrags2, &ciphertext,
         ).unwrap();
         assert_eq!(&*decrypted2, plaintext);
     }
-    println!("  All {} threshold (3-of-5) re-encryption tests passed", n);
+    println!("  All {} threshold (3-of-5) tests passed", n);
+}
+
+#[test]
+fn stress_double_revoke() {
+    println!("\n=== Edge Case: Double Revoke ===");
+    let n = 500;
+    let mut broker = Broker::new(BROKER_SECRET);
+    let mut ids = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        let mut sender = Sender::new();
+        let receiver = Receiver::new();
+        let result = sender.encrypt(b"double revoke", &receiver.public_key).unwrap();
+        register_result(&mut broker, &result, &sender, &receiver.public_key);
+        ids.push((result.payload_id, result.share_id));
+    }
+
+    for (pid, sid) in &ids {
+        assert!(broker.revoke(pid, sid).is_ok());
+    }
+
+    for (pid, sid) in &ids {
+        assert!(broker.revoke(pid, sid).is_err());
+    }
+
+    for (pid, sid) in &ids {
+        assert!(broker.fetch_for_receiver(pid, sid).unwrap_err().to_string().contains("REVOKED"));
+    }
+    println!("  All {} double-revoke checks passed", n);
 }

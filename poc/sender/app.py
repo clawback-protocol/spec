@@ -2,92 +2,91 @@
 Clawback Protocol — Sender Service (port 8011)
 
 The sender owns the data. They:
-  - Generate an X25519 keypair (master key, never leaves this service)
-  - Encrypt data locally with ChaCha20-Poly1305
-  - Derive per-share keys via HKDF(master_key, share_id)
-  - Register encrypted blobs + share keys with the broker
-  - Can revoke any share at any time (tell broker to destroy share key)
+  - Generate an Umbral keypair (sk_sender, pk_sender)
+  - Encrypt data locally with ChaCha20-Poly1305 (symmetric data key)
+  - Use Umbral to encrypt the data key to sender's public key
+  - Generate re-encryption key fragments (kfrags) for each recipient
+  - Register encrypted blobs + kfrags with the broker
+  - Can revoke any share at any time (tell broker to destroy kfrags)
 
-Crypto flow (simulated PRE):
+Crypto flow (Umbral PRE):
   plaintext
-    → encrypt with master_key → ciphertext
-    → for each share: derive share_key = HKDF(master_key, share_id)
-    → send (ciphertext, share_key) to broker
-    → receiver decrypts ciphertext using share_key
-    → master_key NEVER leaves sender
+    → data_key = random 32 bytes
+    → encrypt plaintext with ChaCha20-Poly1305(data_key) → ciphertext
+    → capsule, capsule_ct = umbral.encrypt(sender_pk, data_key)
+    → kfrags = generate_kfrags(sender_sk, receiver_pk, ...)
+    → broker stores: ciphertext, capsule, kfrags
+    → broker re-encrypts capsule with kfrag → cfrag
+    → receiver decrypts cfrag with receiver_sk → data_key → plaintext
+    → master key (sender_sk) NEVER leaves sender
 
 Revocation:
-  → tell broker to delete share_key
-  → receiver can no longer decrypt (no key)
+  → tell broker to delete kfrags
+  → re-encryption mathematically impossible
 """
 
 import os
 import base64
 import uuid
 import requests
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.hashes import SHA256
+from umbral import SecretKey, Signer, encrypt, generate_kfrags
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 BROKER_URL = os.environ.get("BROKER_URL", "http://localhost:8010")
+RECEIVER_URL = os.environ.get("RECEIVER_URL", "http://localhost:8012")
+
+# ─── Umbral sender keypair (persistent for lifetime of service) ──────────────
+_sender_sk = SecretKey.random()
+_sender_pk = _sender_sk.public_key()
+_sender_signer = Signer(_sender_sk)
 
 # ─── In-memory state ─────────────────────────────────────────────────────────
-# payload_id → { master_key_bytes, shares: { share_id: True } }
+# payload_id → { capsule, capsule_ciphertext, shares: { share_id: True } }
 _state = {}
 
 
-def _generate_master_key() -> bytes:
-    """Generate a random 32-byte master key."""
-    return os.urandom(32)
-
-
-def _derive_share_key(enc_key: bytes, share_id: str) -> bytes:
-    """
-    Derive a share-specific key from the payload encryption key + share_id.
-
-    In true PRE, the broker would hold a re-encryption key that transforms
-    ciphertext without revealing enc_key. Here we simulate that by giving
-    each share its own HKDF derivation of enc_key — in practice the broker
-    holds a key that CAN decrypt (simulated proxy), and revocation destroys it.
-    
-    For this PoC we store enc_key directly as the share key, since the receiver
-    needs to decrypt with the same key used to encrypt. The share_id provides
-    per-share namespacing for the audit trail.
-    """
-    # Return enc_key directly — share_id is used for receipt/audit trail only.
-    # In true PRE: this would be rk_{sender→receiver} = enc_key * receiver_pubkey
-    return enc_key
-
-
-def _encrypt(plaintext: bytes, key: bytes) -> bytes:
-    """Encrypt with ChaCha20-Poly1305. Returns nonce + ciphertext."""
+def _encrypt_plaintext(plaintext: bytes) -> tuple:
+    """Encrypt plaintext with a random data key using ChaCha20-Poly1305.
+    Returns (data_key, nonce || ciphertext)."""
+    data_key = os.urandom(32)
     nonce = os.urandom(12)
-    chacha = ChaCha20Poly1305(key)
+    chacha = ChaCha20Poly1305(data_key)
     ct = chacha.encrypt(nonce, plaintext, None)
-    return nonce + ct
+    return data_key, nonce + ct
 
 
-def _decrypt(blob: bytes, key: bytes) -> bytes:
-    """Decrypt ChaCha20-Poly1305 blob (nonce || ciphertext)."""
-    nonce, ct = blob[:12], blob[12:]
-    chacha = ChaCha20Poly1305(key)
-    return chacha.decrypt(nonce, ct, None)
+def _serialize_pk(pk) -> str:
+    """Serialize an Umbral public key to base64."""
+    return base64.b64encode(bytes(pk)).decode()
+
+
+def _serialize_capsule(capsule) -> str:
+    """Serialize an Umbral capsule to base64."""
+    return base64.b64encode(bytes(capsule)).decode()
+
+
+def _serialize_kfrags(kfrags) -> list:
+    """Serialize Umbral key fragments to base64 list."""
+    return [base64.b64encode(bytes(kf)).decode() for kf in kfrags]
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.route("/encrypt", methods=["POST"])
-def encrypt():
+def encrypt_endpoint():
     """
     Encrypt a plaintext and register it with the broker.
     Body: { plaintext }
     Returns: { payload_id, share_id, share_token }
 
-    The first share is auto-created so the sender can immediately share it.
+    1. Generate random data_key, encrypt plaintext with ChaCha20-Poly1305
+    2. Use Umbral to encrypt data_key to sender's public key
+    3. Fetch receiver's public key
+    4. Generate kfrags for receiver
+    5. Register with broker: (ciphertext, capsule, kfrags, keys)
     """
     data = request.json
     plaintext = data.get("plaintext", "")
@@ -95,48 +94,63 @@ def encrypt():
         return jsonify({"error": "plaintext required"}), 400
 
     payload_id = str(uuid.uuid4())
-    master_key = _generate_master_key()
 
-    # Encrypt the data with a HKDF-derived encryption key
-    # (we derive from master_key with info="payload" so we can derive share keys separately)
-    enc_key = HKDF(
-        algorithm=SHA256(),
-        length=32,
-        salt=None,
-        info=b"payload-encryption"
-    ).derive(master_key)
-
-    ciphertext = _encrypt(plaintext.encode(), enc_key)
+    # Step 1: Encrypt plaintext with random data key
+    data_key, ciphertext = _encrypt_plaintext(plaintext.encode())
     blob_b64 = base64.b64encode(ciphertext).decode()
 
-    # Create the first share
-    share_id = str(uuid.uuid4())
-    share_key = _derive_share_key(enc_key, share_id)
-    share_key_b64 = base64.b64encode(share_key).decode()
+    # Step 2: Use Umbral to encrypt data_key to sender's public key
+    capsule, capsule_ciphertext = encrypt(_sender_pk, data_key)
 
-    # Register with broker
+    # Step 3: Fetch receiver's public key
+    try:
+        resp = requests.get(f"{RECEIVER_URL}/public_key", timeout=5)
+        if resp.status_code != 200:
+            return jsonify({"error": "failed to fetch receiver public key"}), 502
+        receiver_pk_b64 = resp.json()["public_key"]
+        from umbral import PublicKey
+        receiver_pk = PublicKey.from_bytes(base64.b64decode(receiver_pk_b64))
+    except Exception as e:
+        return jsonify({"error": f"receiver key fetch failed: {e}"}), 502
+
+    # Step 4: Generate kfrags for the receiver
+    share_id = str(uuid.uuid4())
+    kfrags = generate_kfrags(
+        delegating_sk=_sender_sk,
+        receiving_pk=receiver_pk,
+        signer=_sender_signer,
+        threshold=1,
+        shares=1,
+    )
+
+    # Step 5: Register with broker
     resp = requests.post(f"{BROKER_URL}/register", json={
         "payload_id": payload_id,
         "encrypted_blob": blob_b64,
+        "capsule": _serialize_capsule(capsule),
+        "capsule_ciphertext": base64.b64encode(capsule_ciphertext).decode(),
         "share_id": share_id,
-        "share_key": share_key_b64
+        "kfrags": _serialize_kfrags(kfrags),
+        "receiver_pk": receiver_pk_b64,
+        "delegating_pk": _serialize_pk(_sender_pk),
+        "verifying_pk": _serialize_pk(_sender_signer.verifying_key()),
     })
     if resp.status_code != 201:
         return jsonify({"error": "broker registration failed", "detail": resp.json()}), 502
 
-    # Store keys locally (master_key and enc_key never go to broker)
+    # Store state locally
     _state[payload_id] = {
-        "master_key": master_key,
-        "enc_key": enc_key,
-        "shares": {share_id: True}
+        "capsule": capsule,
+        "capsule_ciphertext": capsule_ciphertext,
+        "shares": {share_id: True},
     }
 
-    app.logger.info(f"[ENCRYPT] payload={payload_id}  share={share_id}")
+    app.logger.info(f"[ENCRYPT] payload={payload_id}  share={share_id}  (Umbral PRE)")
     return jsonify({
         "payload_id": payload_id,
         "share_id": share_id,
-        "share_token": share_id,   # In production this would be a signed JWT
-        "status": "registered"
+        "share_token": share_id,
+        "status": "registered",
     }), 201
 
 
@@ -150,33 +164,49 @@ def share(payload_id):
     if payload_id not in _state:
         return jsonify({"error": "unknown payload (not owned by this sender)"}), 404
 
-    entry = _state[payload_id]
+    # Fetch receiver's public key
+    try:
+        resp = requests.get(f"{RECEIVER_URL}/public_key", timeout=5)
+        receiver_pk_b64 = resp.json()["public_key"]
+        from umbral import PublicKey
+        receiver_pk = PublicKey.from_bytes(base64.b64decode(receiver_pk_b64))
+    except Exception as e:
+        return jsonify({"error": f"receiver key fetch failed: {e}"}), 502
+
     share_id = str(uuid.uuid4())
-    share_key = _derive_share_key(entry["enc_key"], share_id)
-    share_key_b64 = base64.b64encode(share_key).decode()
+    kfrags = generate_kfrags(
+        delegating_sk=_sender_sk,
+        receiving_pk=receiver_pk,
+        signer=_sender_signer,
+        threshold=1,
+        shares=1,
+    )
 
     # Register new share with broker
     resp = requests.post(f"{BROKER_URL}/add_share", json={
         "payload_id": payload_id,
         "share_id": share_id,
-        "share_key": share_key_b64
+        "kfrags": _serialize_kfrags(kfrags),
+        "receiver_pk": receiver_pk_b64,
+        "delegating_pk": _serialize_pk(_sender_pk),
+        "verifying_pk": _serialize_pk(_sender_signer.verifying_key()),
     })
     if resp.status_code != 200:
         return jsonify({"error": "broker add_share failed", "detail": resp.json()}), 502
 
-    entry["shares"][share_id] = True
-    app.logger.info(f"[SHARE] payload={payload_id}  new_share={share_id}")
+    _state[payload_id]["shares"][share_id] = True
+    app.logger.info(f"[SHARE] payload={payload_id}  new_share={share_id}  (Umbral PRE)")
     return jsonify({
         "payload_id": payload_id,
         "share_id": share_id,
-        "share_token": share_id
+        "share_token": share_id,
     }), 200
 
 
 @app.route("/revoke/<payload_id>", methods=["POST"])
 def revoke(payload_id):
     """
-    Revoke a share. Tells broker to destroy the share key.
+    Revoke a share. Tells broker to destroy the kfrags.
     Body: { share_id }
     Returns: broker receipt
     """
@@ -196,12 +226,12 @@ def revoke(payload_id):
     entry["shares"].pop(share_id, None)
 
     receipt = resp.json().get("receipt", {})
-    app.logger.info(f"[REVOKE] payload={payload_id}  share={share_id}  ✓ DESTROYED")
+    app.logger.info(f"[REVOKE] payload={payload_id}  share={share_id}  ✓ DESTROYED (kfrags deleted)")
     return jsonify({
         "status": "revoked",
         "payload_id": payload_id,
         "share_id": share_id,
-        "receipt": receipt
+        "receipt": receipt,
     }), 200
 
 

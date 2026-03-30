@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import requests
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(ROOT, "broker"))
 
 BROKER_PORT = 8010
 SENDER_PORT = 8011
@@ -219,7 +220,7 @@ def main():
             timeout=5,
         )
         revoke_ok = check(
-            "Share key DESTROYED on broker",
+            "Kfrags DESTROYED on broker (Umbral PRE)",
             resp.status_code == 200,
             f"HTTP {resp.status_code}: {resp.text}",
         )
@@ -231,7 +232,8 @@ def main():
             attestation = receipt.get("attestation", {})
             ok(f"Destruction proof: {proof[:16]}...")
             if attestation:
-                ok(f"Attestation: code_hash={attestation.get('code_hash', '')[:16]}...")
+                pcr0 = attestation.get("pcrs", {}).get("pcr0", attestation.get("pcr0", ""))
+                ok(f"Attestation: pcr0={pcr0[:16]}... provider={attestation.get('provider', 'unknown')}")
 
         # ── Platform tries re-access after revocation ─────────────────────
         step("[PLATFORM BROKER] Attempting re-access after revocation...")
@@ -262,6 +264,31 @@ def main():
             )
         else:
             check("Receipt retrieval", False, f"HTTP {resp.status_code}")
+
+        # ── Verify attestation document ──────────────────────────────────
+        step("Verifying attestation document...")
+        if revoke_ok and attestation:
+            from nitro_attestation import verify_attestation_document
+
+            att_valid = verify_attestation_document(attestation)
+            pcr0 = attestation.get("pcrs", {}).get(
+                "pcr0", attestation.get("pcr0", "")
+            )
+            provider = attestation.get("provider", "unknown")
+            check(
+                "Attestation document is verifiable",
+                att_valid,
+                "Attestation signature verification failed",
+            )
+            if att_valid:
+                ok(f"Attestation verified: code_hash={pcr0[:16]}... provider={provider}")
+                ok("In production: verify pcr0 against published release hash")
+        else:
+            check(
+                "Attestation document is verifiable",
+                False,
+                "No attestation document available (revocation may have failed)",
+            )
 
         # ── Summary ───────────────────────────────────────────────────────
         banner("Results")

@@ -47,9 +47,9 @@ Clawback can achieve the same properties without custom silicon by using commodi
 
 ## Roadmap to Clawback Verified Execution
 
-### Phase 1 (Current): Simulated Attestation
+### Phase 1: Simulated Attestation
 
-**Status:** Implemented in this commit.
+**Status:** COMPLETE.
 
 The broker generates a simulated attestation document with each destruction receipt:
 ```json
@@ -67,9 +67,15 @@ This establishes the **interface contract** — all consumers of destruction rec
 
 **What this proves:** Nothing cryptographically. The code hash is self-reported. This phase is about interface readiness, not security.
 
-### Phase 2: AWS Nitro Enclave
+### Phase 2: Umbral PRE + Nitro Attestation Scaffold
 
-**Target:** Single-cloud deployment with cryptographic attestation.
+**Status:** IMPLEMENTED (simulated enclave).
+
+Two core properties now implemented:
+1. **Zero-knowledge broker (Umbral PRE):** Broker holds re-encryption key fragments (kfrags), NOT encryption keys. Even a fully compromised broker cannot decrypt stored payloads. Revocation destroys kfrags — re-encryption becomes mathematically impossible.
+2. **Cryptographic attestation scaffold:** Destruction receipts include Ed25519-signed attestation documents with SHA-384 PCR0 code hash. Schema is Nitro-compatible. `GET /attestation` endpoint on broker for transparency log queries.
+
+**Target (Phase 2b):** Single-cloud deployment with real AWS Nitro attestation.
 
 | Component | Implementation |
 |-----------|---------------|
@@ -174,6 +180,21 @@ Both follow the same pattern:
 4. **Prove** after the fact — signed receipts/logs provide a permanent audit trail
 
 The difference is scope: PCC proves "your data was processed correctly." Clawback proves "your data was destroyed correctly."
+
+---
+
+## Verifying a Destruction Receipt
+
+Any third party can verify a Clawback destruction receipt:
+
+1. Fetch the receipt from `GET /broker/receipts/<payload_id>`
+2. Verify destruction proof: `HMAC-SHA256(broker_secret, payload_id + revoked_at)` matches `destruction_proof` field
+3. Fetch broker attestation: `GET /broker/attestation`
+4. Compare `pcrs.pcr0` against published code hash at github.com/clawback-protocol/spec/releases
+5. In simulated mode: verify Ed25519 signature against published dev key
+6. In Nitro mode: verify COSE_Sign1 against AWS Nitro root CA certificate
+
+This is the equivalent of Apple's PCC transparency log verification.
 
 ---
 

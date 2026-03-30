@@ -1,11 +1,10 @@
-// Clawback Protocol — Sender HTTP Service (port 8011)
+// Clawback Protocol — Sender HTTP Service (port 8011) — Umbral PRE
 //
 // The sender owns the data:
-// - Generates master_key (NEVER transmitted)
-// - Encrypts plaintext locally with ChaCha20-Poly1305
-// - Derives enc_key via HKDF, uses enc_key as share_key (simulated PRE)
-// - Registers encrypted blob + share_key with broker
-// - Can revoke any share at any time
+// - Has Umbral keypair (secret key NEVER transmitted)
+// - Encrypts plaintext locally with ChaCha20-Poly1305 (random data key)
+// - Uses Umbral to encrypt data key, generates kfrags for receivers
+// - Registers encrypted blob + kfrags with broker
 
 use axum::{
     extract::{Path, State},
@@ -16,21 +15,23 @@ use axum::{
 };
 use base64::Engine;
 use clawback::sender::Sender;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use umbral_pre::PublicKey;
 
 // ── Internal state ──────────────────────────────────────────────────────────
 
 struct SenderState {
     sender: Sender,
     broker_url: String,
+    receiver_url: String,
     client: reqwest::Client,
 }
 
 type AppState = Arc<Mutex<SenderState>>;
 
-// ── Request / Response types ────────────────────────────────────────────────
+// ── Request types ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct EncryptRequest {
@@ -42,26 +43,6 @@ struct RevokeRequest {
     share_id: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct BrokerRegisterReq {
-    payload_id: String,
-    encrypted_blob: String,
-    share_id: String,
-    share_key: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct BrokerAddShareReq {
-    payload_id: String,
-    share_id: String,
-    share_key: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct BrokerRevokeReq {
-    share_id: String,
-}
-
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 async fn encrypt(
@@ -70,51 +51,51 @@ async fn encrypt(
 ) -> impl IntoResponse {
     let plaintext = match req.plaintext {
         Some(ref p) if !p.is_empty() => p.clone(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "plaintext required"})),
-            )
-        }
+        _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "plaintext required"}))),
     };
 
-    // Encrypt using library Sender
-    let (payload_id, share_id, encrypted, share_key_bytes, broker_url, client) = {
-        let mut s = state.lock().await;
-        let (payload_id, share_id, encrypted, share_key_bytes) =
-            match s.sender.encrypt(plaintext.as_bytes()) {
-                Ok(result) => result,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": e.to_string()})),
-                    )
-                }
-            };
-        (
-            payload_id,
-            share_id,
-            encrypted,
-            share_key_bytes,
-            s.broker_url.clone(),
-            s.client.clone(),
-        )
+    let mut s = state.lock().await;
+
+    // Fetch receiver's public key
+    let receiver_pk = match fetch_receiver_pk(&s.client, &s.receiver_url).await {
+        Ok(pk) => pk,
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("receiver key fetch failed: {e}")}))),
     };
 
-    let payload_id_str = payload_id.to_string();
-    let share_id_str = share_id.to_string();
-    let blob_b64 = base64::engine::general_purpose::STANDARD.encode(encrypted.to_blob());
-    let share_key_b64 = base64::engine::general_purpose::STANDARD.encode(&share_key_bytes);
+    // Encrypt with Umbral PRE
+    let result = match s.sender.encrypt(plaintext.as_bytes(), &receiver_pk) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
+    };
+
+    let payload_id_str = result.payload_id.to_string();
+    let share_id_str = result.share_id.to_string();
+    let blob_b64 = base64::engine::general_purpose::STANDARD.encode(result.encrypted.to_blob());
+    let capsule_ct_b64 = base64::engine::general_purpose::STANDARD.encode(&*result.capsule_ciphertext);
+
+    // Serialize Umbral types for broker
+    let capsule_json = serde_json::to_value(&result.capsule).unwrap();
+    let kfrags_json: Vec<serde_json::Value> = result.kfrags.iter()
+        .map(|kf| serde_json::to_value(kf).unwrap())
+        .collect();
+    let sender_pk_json = serde_json::to_value(&s.sender.keys.public_key).unwrap();
+    let verifying_pk_json = serde_json::to_value(&s.sender.keys.signer.verifying_key()).unwrap();
+    let receiver_pk_json = serde_json::to_value(&receiver_pk).unwrap();
 
     // Register with broker
-    let broker_resp = client
-        .post(format!("{broker_url}/register"))
-        .json(&BrokerRegisterReq {
-            payload_id: payload_id_str.clone(),
-            encrypted_blob: blob_b64,
-            share_id: share_id_str.clone(),
-            share_key: share_key_b64,
-        })
+    let broker_resp = s.client
+        .post(format!("{}/register", s.broker_url))
+        .json(&serde_json::json!({
+            "payload_id": payload_id_str,
+            "encrypted_blob": blob_b64,
+            "capsule": capsule_json,
+            "capsule_ciphertext": capsule_ct_b64,
+            "share_id": share_id_str,
+            "kfrags": kfrags_json,
+            "receiver_pk": receiver_pk_json,
+            "delegating_pk": sender_pk_json,
+            "verifying_pk": verifying_pk_json,
+        }))
         .send()
         .await;
 
@@ -122,34 +103,17 @@ async fn encrypt(
         Ok(resp) if resp.status().as_u16() == 201 => {}
         Ok(resp) => {
             let detail = resp.text().await.unwrap_or_default();
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": "broker registration failed",
-                    "detail": detail
-                })),
-            );
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "broker registration failed", "detail": detail})));
         }
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": "broker registration failed",
-                    "detail": e.to_string()
-                })),
-            );
-        }
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "broker registration failed", "detail": e.to_string()}))),
     }
 
-    (
-        StatusCode::CREATED,
-        Json(serde_json::json!({
-            "payload_id": payload_id_str,
-            "share_id": share_id_str,
-            "share_token": share_id_str,
-            "status": "registered"
-        })),
-    )
+    (StatusCode::CREATED, Json(serde_json::json!({
+        "payload_id": payload_id_str,
+        "share_id": share_id_str,
+        "share_token": share_id_str,
+        "status": "registered",
+    })))
 }
 
 async fn share(
@@ -158,40 +122,39 @@ async fn share(
 ) -> impl IntoResponse {
     let payload_id: uuid::Uuid = match payload_id_str.parse() {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid payload_id"})),
-            )
-        }
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid payload_id"}))),
     };
 
-    let (share_id, share_key_bytes, broker_url, client) = {
-        let s = state.lock().await;
-        let (share_id, share_key_bytes) = match s.sender.issue_share(&payload_id) {
-            Ok(result) => result,
-            Err(_) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": "unknown payload (not owned by this sender)"
-                    })),
-                )
-            }
-        };
-        (share_id, share_key_bytes, s.broker_url.clone(), s.client.clone())
+    let s = state.lock().await;
+
+    let receiver_pk = match fetch_receiver_pk(&s.client, &s.receiver_url).await {
+        Ok(pk) => pk,
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("receiver key fetch failed: {e}")}))),
     };
 
-    let share_id_str = share_id.to_string();
-    let share_key_b64 = base64::engine::general_purpose::STANDARD.encode(&share_key_bytes);
+    let result = match s.sender.issue_share(&payload_id, &receiver_pk) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "unknown payload (not owned by this sender)"}))),
+    };
 
-    let broker_resp = client
-        .post(format!("{broker_url}/add_share"))
-        .json(&BrokerAddShareReq {
-            payload_id: payload_id_str.clone(),
-            share_id: share_id_str.clone(),
-            share_key: share_key_b64,
-        })
+    let share_id_str = result.share_id.to_string();
+    let kfrags_json: Vec<serde_json::Value> = result.kfrags.iter()
+        .map(|kf| serde_json::to_value(kf).unwrap())
+        .collect();
+    let sender_pk_json = serde_json::to_value(&s.sender.keys.public_key).unwrap();
+    let verifying_pk_json = serde_json::to_value(&s.sender.keys.signer.verifying_key()).unwrap();
+    let receiver_pk_json = serde_json::to_value(&receiver_pk).unwrap();
+
+    let broker_resp = s.client
+        .post(format!("{}/add_share", s.broker_url))
+        .json(&serde_json::json!({
+            "payload_id": payload_id_str,
+            "share_id": share_id_str,
+            "kfrags": kfrags_json,
+            "receiver_pk": receiver_pk_json,
+            "delegating_pk": sender_pk_json,
+            "verifying_pk": verifying_pk_json,
+        }))
         .send()
         .await;
 
@@ -199,33 +162,16 @@ async fn share(
         Ok(resp) if resp.status().as_u16() == 200 => {}
         Ok(resp) => {
             let detail = resp.text().await.unwrap_or_default();
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": "broker add_share failed",
-                    "detail": detail
-                })),
-            );
+            return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "broker add_share failed", "detail": detail})));
         }
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": "broker add_share failed",
-                    "detail": e.to_string()
-                })),
-            );
-        }
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "broker add_share failed", "detail": e.to_string()}))),
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "payload_id": payload_id_str,
-            "share_id": share_id_str,
-            "share_token": share_id_str
-        })),
-    )
+    (StatusCode::OK, Json(serde_json::json!({
+        "payload_id": payload_id_str,
+        "share_id": share_id_str,
+        "share_token": share_id_str,
+    })))
 }
 
 async fn revoke(
@@ -235,24 +181,14 @@ async fn revoke(
 ) -> impl IntoResponse {
     let share_id = match req.share_id {
         Some(ref s) if !s.is_empty() => s.clone(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "share_id required"})),
-            )
-        }
+        _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "share_id required"}))),
     };
 
-    let (broker_url, client) = {
-        let s = state.lock().await;
-        (s.broker_url.clone(), s.client.clone())
-    };
+    let s = state.lock().await;
 
-    let broker_resp = client
-        .post(format!("{broker_url}/revoke/{payload_id}"))
-        .json(&BrokerRevokeReq {
-            share_id: share_id.clone(),
-        })
+    let broker_resp = s.client
+        .post(format!("{}/revoke/{payload_id}", s.broker_url))
+        .json(&serde_json::json!({"share_id": share_id}))
         .send()
         .await;
 
@@ -260,35 +196,26 @@ async fn revoke(
         Ok(resp) if resp.status().as_u16() == 200 => {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             let receipt = body.get("receipt").cloned().unwrap_or_default();
-
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "revoked",
-                    "payload_id": payload_id,
-                    "share_id": share_id,
-                    "receipt": receipt
-                })),
-            )
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "revoked",
+                "payload_id": payload_id,
+                "share_id": share_id,
+                "receipt": receipt,
+            })))
         }
         Ok(resp) => {
             let detail = resp.text().await.unwrap_or_default();
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": "broker revocation failed",
-                    "detail": detail
-                })),
-            )
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "broker revocation failed", "detail": detail})))
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": "broker revocation failed",
-                "detail": e.to_string()
-            })),
-        ),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "broker revocation failed", "detail": e.to_string()}))),
     }
+}
+
+async fn fetch_receiver_pk(client: &reqwest::Client, receiver_url: &str) -> anyhow::Result<PublicKey> {
+    let resp = client.get(format!("{receiver_url}/public_key")).send().await?;
+    let body: serde_json::Value = resp.json().await?;
+    let pk: PublicKey = serde_json::from_value(body["public_key"].clone())?;
+    Ok(pk)
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -300,23 +227,24 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8011);
 
-    let broker_url =
-        std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8010".to_string());
+    let broker_url = std::env::var("BROKER_URL").unwrap_or_else(|_| "http://localhost:8010".to_string());
+    let receiver_url = std::env::var("RECEIVER_URL").unwrap_or_else(|_| "http://localhost:8012".to_string());
 
     let sender_state = Arc::new(Mutex::new(SenderState {
         sender: Sender::new(),
         broker_url,
+        receiver_url,
         client: reqwest::Client::new(),
     }));
 
     let app = Router::new()
         .route("/encrypt", post(encrypt))
-        .route("/share/:payload_id", post(share))
-        .route("/revoke/:payload_id", post(revoke))
+        .route("/share/{payload_id}", post(share))
+        .route("/revoke/{payload_id}", post(revoke))
         .with_state(sender_state);
 
     let addr = format!("0.0.0.0:{port}");
-    eprintln!("[SENDER] listening on {addr}");
+    eprintln!("[SENDER] listening on {addr} (Umbral PRE)");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

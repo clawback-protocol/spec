@@ -329,30 +329,32 @@ fn human_output_shows_verified() {
 #[test]
 fn full_lifecycle_with_broker_module() {
     // Use the actual Broker module to create a real receipt, then verify it
-    use clawback::crypto::*;
+    use clawback::crypto::PayloadId;
 
     let broker_secret = b"lifecycle-test-secret";
     let mut broker = clawback::broker::Broker::new(broker_secret);
 
-    // Sender encrypts
-    let delegating_sk = SecretKey::random();
-    let delegating_pk = delegating_sk.public_key();
-    let signer = Signer::new(SecretKey::random());
-    let receiving_sk = SecretKey::random();
-    let receiving_pk = receiving_sk.public_key();
+    // Create sender and receiver with Umbral PRE
+    let mut sender = clawback::sender::Sender::new();
+    let receiver = clawback::receiver::Receiver::new();
 
-    let plaintext = b"Clawback lifecycle test data";
-    let (capsule, ciphertext) = encrypt(&delegating_pk, plaintext).unwrap();
+    let result = sender.encrypt(b"Clawback lifecycle test data", &receiver.public_key).unwrap();
+    let payload_id = result.payload_id;
+    let share_id = result.share_id;
 
-    let kfrags = generate_kfrags(&delegating_sk, &receiving_pk, &signer, 1, 1, true, true);
-
-    let payload_id = PayloadId::new_v4();
-    let share_id = uuid::Uuid::new_v4();
+    // Register with broker
+    let capsule_json = serde_json::to_string(&result.capsule).unwrap();
+    let capsule_ct_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &*result.capsule_ciphertext,
+    );
+    let delegating_pk_json = serde_json::to_string(&sender.keys.public_key).unwrap();
 
     broker.register(
-        payload_id, ciphertext.to_vec(), capsule,
-        delegating_pk, signer.verifying_key(),
-        share_id, kfrags.to_vec(), receiving_pk,
+        payload_id, result.encrypted.ciphertext.clone(), result.encrypted.nonce,
+        capsule_json, capsule_ct_b64, delegating_pk_json,
+        sender.keys.signer.verifying_key(),
+        share_id, result.kfrags, receiver.public_key.clone(),
     );
 
     // Revoke — get destruction receipt
@@ -388,7 +390,7 @@ fn full_lifecycle_with_broker_module() {
     assert!(output.status.success());
 
     // Also verify that post-revoke fetch is denied
-    let fetch_result = broker.fetch(&payload_id, &share_id);
+    let fetch_result = broker.fetch_for_receiver(&payload_id, &share_id);
     assert!(fetch_result.is_err());
 
     std::fs::remove_dir_all(&dir).ok();
